@@ -6,7 +6,18 @@
 # META   "kernel_info": {
 # META     "name": "synapse_pyspark"
 # META   },
-# META   "dependencies": {}
+# META   "dependencies": {
+# META     "lakehouse": {
+# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
+# META       "default_lakehouse_name": "inc_fardap_lakehouse",
+# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
+# META       "known_lakehouses": [
+# META         {
+# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
+# META         }
+# META       ]
+# META     }
+# META   }
 # META }
 
 # MARKDOWN ********************
@@ -36,28 +47,19 @@
 from pyspark.sql import functions as F, types as T
 from pyspark.sql.window import Window
 import json
-import sys
 from datetime import datetime
-
-# Import table naming utility
-sys.path.append('/lakehouse/default/Files/notebooks/Supporting_Scripts')
-from utils_table_naming import get_table_name, TableNamingConfig
 
 # Get the Variable library
 vl = notebookutils.variableLibrary.getLibrary("var_library_fardap")
 
 # Configuration
 LAKEHOUSE_NAME = vl.getVariable("LAKEHOUSE_NAME")
-
-# Load table naming configuration
-config = TableNamingConfig.from_variable_library()
-
-TABLE_BRONZE = get_table_name('bronze', 'incidents', config)
-TABLE_BRONZE_CDC = get_table_name('bronze', 'cdc_log', config)
-TABLE_SILVER_MAIN = get_table_name('silver', 'incidents', config)
-TABLE_SILVER_FLATTEN_STATE = get_table_name('silver', 'flatten_state', config)
-TABLE_SILVER_CONTENT_HASH = get_table_name('silver', 'content_hash', config)
-TABLE_SILVER_CDC = get_table_name('silver', 'cdc_log', config)
+TABLE_BRONZE = "fardap_bronze_incidents"
+TABLE_BRONZE_CDC = "fardap_bronze_cdc_log"
+TABLE_SILVER_MAIN = "fardap_silver_incidents"
+TABLE_SILVER_FLATTEN_STATE = "fardap_silver_flatten_state"
+TABLE_SILVER_CONTENT_HASH = "fardap_silver_content_hash"
+TABLE_SILVER_CDC = "fardap_silver_cdc_log"
 
 print(f"[INFO] Enhanced Silver Incremental Transform")
 print(f"  Lakehouse: {LAKEHOUSE_NAME}")
@@ -250,7 +252,7 @@ def discover_arrays_in_json(obj, parent_key='', sep='_'):
                     # DEEP discovery: recursively find ALL nested fields
                     fields = discover_fields_in_array_item(sample_item)
                     arrays[k] = {
-                        "table_name": get_table_name('silver', k.lower(), config),
+                        "table_name": f"fardap_silver_{k.lower()}",
                         "fields": fields,
                         "path": new_key
                     }

@@ -13,10 +13,6 @@
     {
       "name": "KEY_VAULT_URI",
       "value": "https://devfardap.vault.azure.net/"
-    },
-    {
-      "name": "USE_SCHEMAS",
-      "value": "false"
     }
   ]
 }

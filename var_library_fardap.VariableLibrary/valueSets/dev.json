@@ -9,10 +9,6 @@
     {
       "name": "LAKEHOUSE_NAME",
       "value": "fardap_lakehouse_dev"
-    },
-    {
-      "name": "USE_SCHEMAS",
-      "value": "false"
     }
   ]
 }
