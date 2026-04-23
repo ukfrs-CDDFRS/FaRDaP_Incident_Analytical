@@ -623,4 +623,4 @@ display(df_duplicates)
 
 ---
 
-[← Back to README](README.md) | [Configuration →](CONFIGURATION.md)
+[← Back to README](../README.md) | [Configuration →](CONFIGURATION.md)

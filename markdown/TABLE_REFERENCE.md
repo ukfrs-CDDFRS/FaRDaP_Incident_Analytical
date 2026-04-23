@@ -419,4 +419,4 @@ The semantic model includes all Silver entity tables plus state tracking tables:
 
 ---
 
-[← Back to README](README.md) | [Technical Documentation →](TECHNICAL_DOCUMENTATION.md)
+[← Back to README](../README.md) | [Technical Documentation →](TECHNICAL_DOCUMENTATION.md)

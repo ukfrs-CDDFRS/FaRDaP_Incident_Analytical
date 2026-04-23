@@ -305,4 +305,4 @@ Configure Fabric alerts for:
 
 ---
 
-[← Back to README](README.md) | [Configuration →](CONFIGURATION.md)
+[← Back to README](../README.md) | [Configuration →](CONFIGURATION.md)

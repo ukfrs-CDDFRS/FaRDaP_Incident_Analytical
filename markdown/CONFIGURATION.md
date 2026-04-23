@@ -273,4 +273,4 @@ Before running the pipelines, verify:
 
 ---
 
-[← Back to README](README.md) | [Technical Documentation →](TECHNICAL_DOCUMENTATION.md)
+[← Back to README](../README.md) | [Technical Documentation →](TECHNICAL_DOCUMENTATION.md)
