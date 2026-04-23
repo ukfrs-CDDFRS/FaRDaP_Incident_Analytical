@@ -36,6 +36,30 @@
       "note": "",
       "type": "String",
       "value": ""
+    },
+    {
+      "name": "USE_SCHEMAS",
+      "note": "Enable schema-based organization (true) or use table prefixes (false)",
+      "type": "String",
+      "value": "false"
+    },
+    {
+      "name": "BRONZE_SCHEMA",
+      "note": "Schema name for Bronze layer (only used if USE_SCHEMAS=true)",
+      "type": "String",
+      "value": "bronze"
+    },
+    {
+      "name": "SILVER_SCHEMA",
+      "note": "Schema name for Silver layer (only used if USE_SCHEMAS=true)",
+      "type": "String",
+      "value": "silver"
+    },
+    {
+      "name": "GOLD_SCHEMA",
+      "note": "Schema name for Gold layer (only used if USE_SCHEMAS=true)",
+      "type": "String",
+      "value": "gold"
     }
   ]
 }

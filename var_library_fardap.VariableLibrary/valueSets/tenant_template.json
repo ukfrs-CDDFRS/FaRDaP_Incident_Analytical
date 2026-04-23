@@ -1,0 +1,38 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/valueSet/1.0.0/schema.json",
+  "name": "tenant_template",
+  "variableOverrides": [
+    {
+      "name": "API_BASE_URL",
+      "value": "https://www.fardap.fire.gov.uk"
+    },
+    {
+      "name": "FRS_ID",
+      "value": "CHANGE_ME"
+    },
+    {
+      "name": "LAKEHOUSE_NAME",
+      "value": "inc_fardap_lakehouse"
+    },
+    {
+      "name": "KEY_VAULT_URI",
+      "value": "https://YOUR_KEYVAULT_NAME.vault.azure.net/"
+    },
+    {
+      "name": "USE_SCHEMAS",
+      "value": "false"
+    },
+    {
+      "name": "BRONZE_SCHEMA",
+      "value": "bronze"
+    },
+    {
+      "name": "SILVER_SCHEMA",
+      "value": "silver"
+    },
+    {
+      "name": "GOLD_SCHEMA",
+      "value": "gold"
+    }
+  ]
+}

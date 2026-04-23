@@ -6,18 +6,7 @@
 # META   "kernel_info": {
 # META     "name": "synapse_pyspark"
 # META   },
-# META   "dependencies": {
-# META     "lakehouse": {
-# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
-# META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
-# META       "known_lakehouses": [
-# META         {
-# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
-# META         }
-# META       ]
-# META     }
-# META   }
+# META   "dependencies": {}
 # META }
 
 # MARKDOWN ********************
@@ -60,9 +49,12 @@ PASSWORD = notebookutils.credentials.getSecret(KEY_VAULT_URI, "FARDAP-API-PASSWO
 FRS_ID = vl.getVariable("FRS_ID")
 
 LAKEHOUSE_NAME = vl.getVariable("LAKEHOUSE_NAME")
-TABLE_FULL = 'fardap_bronze_incidents'
-TABLE_CDC = 'fardap_bronze_cdc_log'
-TABLE_STATE = 'fardap_sync_state'
+
+# Load table naming configuration
+config = TableNamingConfig.from_variable_library()
+TABLE_FULL = get_table_name('bronze', 'incidents', config)
+TABLE_CDC = get_table_name('bronze', 'cdc_log', config)
+TABLE_STATE = get_table_name('bronze', 'sync_state', config)
 
 BATCH_SIZE = 10000
 MAX_WORKERS = 32
@@ -92,11 +84,16 @@ import time
 import random
 import threading
 import pandas as pd
+import sys
 from datetime import datetime, timezone
 from pyspark.sql import functions as F
 import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Import table naming utility
+sys.path.append('/lakehouse/default/Files/notebooks/Supporting_Scripts')
+from utils_table_naming import get_table_name, TableNamingConfig, print_configuration_summary
 
 # Authentication and session helpers
 token_lock = threading.Lock()
