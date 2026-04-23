@@ -5,7 +5,8 @@
         "type": "TridentNotebook",
         "typeProperties": {
           "notebookId": "e98c2740-2fb7-afba-4456-84d22f2c0b6e",
-          "workspaceId": "00000000-0000-0000-0000-000000000000"
+          "workspaceId": "00000000-0000-0000-0000-000000000000",
+          "sessionTag": "inc_fardap_session_tag"
         },
         "policy": {
           "timeout": "0.12:00:00",
@@ -21,7 +22,8 @@
         "type": "TridentNotebook",
         "typeProperties": {
           "notebookId": "5241ce49-9d62-a9a4-4f16-9e2b19551428",
-          "workspaceId": "00000000-0000-0000-0000-000000000000"
+          "workspaceId": "00000000-0000-0000-0000-000000000000",
+          "sessionTag": "inc_fardap_session_tag"
         },
         "policy": {
           "timeout": "0.12:00:00",
