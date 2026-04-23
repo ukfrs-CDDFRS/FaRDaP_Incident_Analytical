@@ -1,0 +1,14 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/valueSet/1.0.0/schema.json",
+  "name": "dev",
+  "variableOverrides": [
+    {
+      "name": "API_BASE_URL",
+      "value": "https://www.fardap-training.fire.gov.uk"
+    },
+    {
+      "name": "LAKEHOUSE_NAME",
+      "value": "fardap_lakehouse_dev"
+    }
+  ]
+}

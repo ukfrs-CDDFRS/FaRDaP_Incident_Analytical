@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "DataPipeline",
+    "displayName": "PL_FaRDaP_inc_incremental"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "62af3ae1-66ce-ac2c-4e6f-b519b9bce268"
+  }
+}

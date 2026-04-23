@@ -1,0 +1,18 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/valueSet/1.0.0/schema.json",
+  "name": "prod",
+  "variableOverrides": [
+    {
+      "name": "LAKEHOUSE_NAME",
+      "value": "fardap_lakehouse"
+    },
+    {
+      "name": "API_BASE_URL",
+      "value": "https://www.fardap.fire.gov.uk"
+    },
+    {
+      "name": "KEY_VAULT_URI",
+      "value": "https://devfardap.vault.azure.net/"
+    }
+  ]
+}

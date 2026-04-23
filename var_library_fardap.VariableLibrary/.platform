@@ -1,0 +1,11 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "VariableLibrary",
+    "displayName": "var_library_fardap"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "2f67549b-d083-be7f-4b55-66eb65dfe297"
+  }
+}

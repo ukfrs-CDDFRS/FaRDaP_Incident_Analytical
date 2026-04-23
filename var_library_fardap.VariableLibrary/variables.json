@@ -1,0 +1,41 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/item/variableLibrary/definition/variables/1.0.0/schema.json",
+  "variables": [
+    {
+      "name": "API_BASE_URL",
+      "note": "",
+      "type": "String",
+      "value": ""
+    },
+    {
+      "name": "FRS_ID",
+      "note": "",
+      "type": "String",
+      "value": "17"
+    },
+    {
+      "name": "LAKEHOUSE_NAME",
+      "note": "",
+      "type": "String",
+      "value": ""
+    },
+    {
+      "name": "TABLE_FULL",
+      "note": "",
+      "type": "String",
+      "value": ""
+    },
+    {
+      "name": "TABLE_CDC",
+      "note": "",
+      "type": "String",
+      "value": ""
+    },
+    {
+      "name": "KEY_VAULT_URI",
+      "note": "",
+      "type": "String",
+      "value": ""
+    }
+  ]
+}
