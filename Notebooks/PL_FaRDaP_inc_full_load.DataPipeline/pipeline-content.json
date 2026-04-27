@@ -32,7 +32,7 @@
           "secureInput": false,
           "secureOutput": false
         },
-        "name": "04_Silver_Full_Transform_Enhanced",
+        "name": "02_Silver_Full_Transform_Enhanced",
         "dependsOn": [
           {
             "activity": "01_Bronze_Full_Load",
@@ -55,12 +55,12 @@
           "secureInput": false,
           "secureOutput": false
         },
-        "name": "05_Gold_Full_Analytics",
+        "name": "03_Gold_Full_Analytics",
         "state": "Inactive",
         "onInactiveMarkAs": "Succeeded",
         "dependsOn": [
           {
-            "activity": "04_Silver_Full_Transform_Enhanced",
+            "activity": "02_Silver_Full_Transform_Enhanced",
             "dependencyConditions": [
               "Succeeded"
             ]

@@ -15,7 +15,7 @@
           "secureInput": false,
           "secureOutput": false
         },
-        "name": "02_Bronze_Incremental_Sync",
+        "name": "01_Bronze_Incremental_Sync",
         "dependsOn": []
       },
       {
@@ -32,10 +32,10 @@
           "secureInput": false,
           "secureOutput": false
         },
-        "name": "04_Silver_Incremental_Transform_Enhanced",
+        "name": "02_Silver_Incremental_Transform_Enhanced",
         "dependsOn": [
           {
-            "activity": "02_Bronze_Incremental_Sync",
+            "activity": "01_Bronze_Incremental_Sync",
             "dependencyConditions": [
               "Succeeded"
             ]
@@ -55,12 +55,12 @@
           "secureInput": false,
           "secureOutput": false
         },
-        "name": "05_Gold_Incremental_Analytics",
+        "name": "03_Gold_Incremental_Analytics",
         "state": "Inactive",
         "onInactiveMarkAs": "Succeeded",
         "dependsOn": [
           {
-            "activity": "04_Silver_Incremental_Transform_Enhanced",
+            "activity": "02_Silver_Incremental_Transform_Enhanced",
             "dependencyConditions": [
               "Succeeded"
             ]
