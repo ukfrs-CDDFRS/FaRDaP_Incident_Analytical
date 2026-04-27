@@ -69,7 +69,7 @@ TABLE_FULL = 'fardap_bronze_incidents'
 TABLE_CDC = 'fardap_bronze_cdc_log'
 TABLE_STATE = 'fardap_sync_state'
 
-BATCH_SIZE = 10000
+BATCH_SIZE = 1000
 MAX_WORKERS = 32
 MAX_ATTEMPTS = 5
 BASE_BACKOFF = 0.5
@@ -97,9 +97,6 @@ import threading
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from pyspark.sql import functions as F
-import urllib3
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Get last watermark
 DEFAULT_LOOKBACK_MINUTES = 5
@@ -110,6 +107,7 @@ try:
     rows = (
         watermark_df
         .select("last_watermark")
+        .orderBy(F.col("last_watermark").desc())
         .limit(1)
         .collect()
     )
@@ -120,11 +118,16 @@ try:
     else:
         value = rows[0][0]
 
-        # normalise to datetime
+        # normalise to timezone-aware datetime
         if isinstance(value, str):
-            UPDATED_FROM_DT = datetime.fromisoformat(value.replace("Z", ""))
+            iso = value.strip()
+            if iso.endswith("Z"):
+                iso = iso[:-1] + "+00:00"
+            UPDATED_FROM_DT = datetime.fromisoformat(iso)
+            if UPDATED_FROM_DT.tzinfo is None:
+                UPDATED_FROM_DT = UPDATED_FROM_DT.replace(tzinfo=timezone.utc)
         else:
-            UPDATED_FROM_DT = value
+            UPDATED_FROM_DT = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
         print(f"📍 Using stored watermark: {UPDATED_FROM_DT}")
 
@@ -133,35 +136,37 @@ except Exception as e:
     UPDATED_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
     print("📍 Using 5-minute lookback")
 
-UPDATED_FROM = UPDATED_FROM_DT.strftime("%Y-%m-%dT%H:%MZ")
+UPDATED_FROM = UPDATED_FROM_DT.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 # Authentication and session helpers
 token_lock = threading.Lock()
 shared_token = None
+shared_refresh_token = None
 token_expiry = None
 
 def authenticate():
-    global shared_token, token_expiry
+    """Full authentication via /auth/init using username/password."""
+    global shared_token, shared_refresh_token, token_expiry
     try:
         resp = requests.post(
             f'{API_BASE_URL}/api/v1/auth/init',
             json={'username': USERNAME, 'password': PASSWORD},
-            verify=False,
             timeout=30
         )
         resp.raise_for_status()
         tokens = resp.json().get('tokens', {})
         new_token = tokens.get('accessToken')
-        expires_in = tokens.get('expiresIn', 3600)  # Default to 1 hour
+        new_refresh = tokens.get('refreshToken')
+        expires_in = tokens.get('expiresIn', 600)  # Spec: tokens ~20 min; conservative default
         
         if not new_token:
             raise RuntimeError('No access token in auth response')
         
-        # Calculate token expiry time
         expiry_time = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
         
         with token_lock:
             shared_token = new_token
+            shared_refresh_token = new_refresh
             token_expiry = expiry_time
         
         print(f'✅ Authenticated successfully (expires at {expiry_time.strftime("%H:%M:%S UTC")})')
@@ -170,8 +175,43 @@ def authenticate():
         print(f'❌ Authentication failed: {e}')
         raise
 
-def is_token_expiring(buffer_seconds=300):
-    """Check if token will expire within buffer_seconds (default 5 minutes)"""
+def refresh_access_token():
+    """Refresh access token via /auth/access-token-refresh; falls back to full re-auth on failure."""
+    global shared_token, shared_refresh_token, token_expiry
+    with token_lock:
+        refresh_snapshot = shared_refresh_token
+    if not refresh_snapshot:
+        return authenticate()
+    try:
+        resp = requests.post(
+            f'{API_BASE_URL}/api/v1/auth/access-token-refresh',
+            json={'username': USERNAME, 'refreshToken': refresh_snapshot},
+            timeout=30
+        )
+        resp.raise_for_status()
+        tokens = resp.json().get('tokens', {})
+        new_token = tokens.get('accessToken')
+        new_refresh = tokens.get('refreshToken') or refresh_snapshot
+        expires_in = tokens.get('expiresIn', 600)
+        
+        if not new_token:
+            raise RuntimeError('No access token in refresh response')
+        
+        expiry_time = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        
+        with token_lock:
+            shared_token = new_token
+            shared_refresh_token = new_refresh
+            token_expiry = expiry_time
+        
+        print(f'🔄 Access token refreshed (expires at {expiry_time.strftime("%H:%M:%S UTC")})')
+        return new_token
+    except Exception as e:
+        print(f'⚠️  Token refresh failed ({e}); falling back to full re-auth')
+        return authenticate()
+
+def is_token_expiring(buffer_seconds=120):
+    """Check if token will expire within buffer_seconds (default 2 minutes for ~20-min tokens)."""
     with token_lock:
         if token_expiry is None:
             return True
@@ -181,8 +221,7 @@ def is_token_expiring(buffer_seconds=300):
 def make_session():
     # Proactive token refresh if expiring soon
     if is_token_expiring():
-        print('🔄 Token expiring soon, refreshing...')
-        authenticate()
+        refresh_access_token()
     
     with token_lock:
         token_snapshot = shared_token
@@ -219,12 +258,10 @@ def search_changed_ids(batch_size=BATCH_SIZE):
             'query': {
                 'list': {'documentTypes': ['Incident']},
                 'match': {'territoryFrsId': str(FRS_ID)},
-                'range': [
-                    {
-                        'from': UPDATED_FROM,
-                        'field': 'dateUpdated'
-                    }
-                ]
+                'range': {
+                    'from': UPDATED_FROM,
+                    'rangePath': 'dateUpdated'
+                }
             },
             'cursor': {'size': batch_size}
         }
@@ -232,15 +269,18 @@ def search_changed_ids(batch_size=BATCH_SIZE):
             payload['cursor']['lastDocumentValues'] = cursor
         
         s = make_session()
-        resp = s.post(url, json=payload, verify=False, timeout=60)
+        resp = s.post(url, json=payload, timeout=60)
         
         if resp.status_code == 401:
             authenticate()
             s = make_session()
-            resp = s.post(url, json=payload, verify=False, timeout=60)
+            resp = s.post(url, json=payload, timeout=60)
         
         resp.raise_for_status()
         data = resp.json()
+        errors = data.get('errors') or []
+        if errors:
+            raise RuntimeError(f'FaRDaP search returned errors: {errors}')
         results = data.get('results', [])
         
         new_ids = [
@@ -270,7 +310,6 @@ def fetch_one(doc_id):
             resp = s.get(
                 f'{API_BASE_URL}/api/v1/document/{doc_id}',
                 params={'frsId': FRS_ID},
-                verify=False,
                 timeout=30
             )
             
@@ -291,7 +330,9 @@ def fetch_one(doc_id):
             
             resp.raise_for_status()
             body = resp.json()
-            change_ts = body.get('metadata', {}).get('draft', {}).get('updatedDatetime')
+            props = body.get('properties') or {}
+            audit = (body.get('content') or {}).get('auditDetail') or {}
+            change_ts = props.get('dateUpdated') or audit.get('dateUpdated')
             
             return {
                 'documentId': doc_id,
@@ -344,8 +385,8 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         if completed % 500 == 0:
             print(f'   Progress: {completed:,}/{len(changed_ids):,} ({len(results):,} with data)')
         if completed % REFRESH_EVERY == 0:
-            print(f'   🔄 Re-authenticating...')
-            authenticate()
+            print(f'   🔄 Periodic token refresh...')
+            refresh_access_token()
 
 print(f'\n✅ Fetch complete: {len(results):,} / {len(changed_ids):,} documents fetched')
 assert len(results) > 0, '❌ No documents retrieved'
@@ -379,6 +420,19 @@ df_raw.createOrReplaceTempView('staging_incremental')
 
 # CELL ********************
 
+# Determine op_type from current Bronze membership BEFORE the MERGE.
+# Existing documentId -> 'update'; new documentId -> 'insert'.
+existing_ids = spark.table(TABLE_FULL).select('documentId').distinct()
+df_tagged = df_raw.join(existing_ids, on='documentId', how='left_anti') \
+    .withColumn('op_type', F.lit('insert')) \
+    .select('documentId', 'op_type', 'change_ts', 'sync_timestamp') \
+    .unionByName(
+        df_raw.join(existing_ids, on='documentId', how='left_semi')
+              .withColumn('op_type', F.lit('update'))
+              .select('documentId', 'op_type', 'change_ts', 'sync_timestamp')
+    )
+df_tagged.cache()
+
 # Merge into Bronze table (MERGE mode for idempotency)
 print(f'\n🔄 Merging into {TABLE_FULL}...')
 
@@ -395,18 +449,13 @@ WHEN NOT MATCHED THEN
 print(f'✅ Merge completed')
 
 # Append to CDC log
-df_cdc = df_raw.select(
-    F.col('documentId'),
-    F.when(F.col('change_ts').isNotNull(), 'update').otherwise('insert').alias('op_type'),
-    F.col('change_ts'),
-    F.col('sync_timestamp')
-)
+df_cdc = df_tagged
 
 print(f'\n📋 Appending {df_cdc.count():,} records to {TABLE_CDC}...')
 df_cdc.write \
     .format('delta') \
     .mode('append') \
-    .option('overwriteSchema', 'true') \
+    .option('mergeSchema', 'true') \
     .saveAsTable(TABLE_CDC)
 
 print(f'✅ CDC log appended')

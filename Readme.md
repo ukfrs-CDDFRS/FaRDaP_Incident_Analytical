@@ -218,7 +218,7 @@ All notebooks use `var_library_fardap` for configuration:
 
 | Parameter | Default | Description |
 |:----------|:--------|:------------|
-| `BATCH_SIZE` | 10,000 | Records per API page |
+| `BATCH_SIZE` | 1,000 | Records per API page (server caps at 1,000 per FaRDaP spec) |
 | `MAX_WORKERS` | 32 | Parallel fetch threads |
 | `MAX_ATTEMPTS` | 5 | Retry attempts |
 | `BASE_BACKOFF` | 0.5s | Initial retry delay |
@@ -226,14 +226,21 @@ All notebooks use `var_library_fardap` for configuration:
 
 ### Authentication Features
 
+FaRDaP access tokens have a short lifetime (~20 minutes per spec). The platform uses the dedicated refresh-token endpoint to keep sessions alive without re-sending credentials.
+
 | Feature | Implementation |
 |:--------|:---------------|
-| **Token Expiry Tracking** | Captures `expiresIn` from API, calculates expiry time |
-| **Time-Based Refresh** | Proactively refreshes when < 5 minutes remaining |
-| **Count-Based Refresh** | Re-authenticates every 25,000 documents (belt-and-suspenders) |
-| **User-Agent Header** | `Fabric/FaRDaP-Analytical-Platform` on all API requests |
+| **Token Expiry Tracking** | Captures `expiresIn` from API; conservative 600s default if absent |
+| **Refresh-Token Flow** | Calls `/api/v1/auth/access-token-refresh` with stored `refreshToken` |
+| **Proactive Refresh** | Refreshes when < 2 minutes remaining (suited to ~20-minute tokens) |
+| **Count-Based Refresh** | Refreshes every 25,000 documents (belt-and-suspenders) |
+| **User-Agent Header** | `Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}` on all API requests |
 | **Thread-Safe Updates** | Token updates protected by lock for parallel processing |
-| **Expiry Logging** | Logs token expiry time on authentication for monitoring |
+| **Fallback to Re-auth** | If refresh fails, transparently re-authenticates via `/auth/init` |
+
+### Security
+
+All FaRDaP API calls use HTTPS with **certificate verification enabled** (no `verify=False`). If your environment uses a private/self-signed CA, set `REQUESTS_CA_BUNDLE` to the CA bundle path on the Spark workers rather than disabling verification.
 
 ---
 
