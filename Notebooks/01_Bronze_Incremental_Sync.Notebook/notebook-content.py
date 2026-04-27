@@ -136,7 +136,7 @@ except Exception as e:
     UPDATED_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
     print("📍 Using 5-minute lookback")
 
-UPDATED_FROM = UPDATED_FROM_DT.strftime("%Y-%m-%dT%H:%M:%SZ")
+UPDATED_FROM = UPDATED_FROM_DT.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 # Authentication and session helpers
 token_lock = threading.Lock()
@@ -258,10 +258,12 @@ def search_changed_ids(batch_size=BATCH_SIZE):
             'query': {
                 'list': {'documentTypes': ['Incident']},
                 'match': {'territoryFrsId': str(FRS_ID)},
-                'range': {
-                    'from': UPDATED_FROM,
-                    'rangePath': 'dateUpdated'
-                }
+                'range': [
+                    {
+                        'from': UPDATED_FROM,
+                        'field': 'dateUpdated'
+                    }
+                ]
             },
             'cursor': {'size': batch_size}
         }
