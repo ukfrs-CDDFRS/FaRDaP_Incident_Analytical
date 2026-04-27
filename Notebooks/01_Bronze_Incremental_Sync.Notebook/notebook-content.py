@@ -367,7 +367,8 @@ changed_ids = search_changed_ids()
 
 if len(changed_ids) == 0:
     print('\n✅ No changes since last run. Exiting.')
-    notebookutils.notebook.exit("success")
+    # Signal downstream pipeline activities to skip (checked via @activity(...).output.result.exitValue)
+    notebookutils.notebook.exit("no_changes")
 
 # Fetch changed documents in parallel
 results = []
