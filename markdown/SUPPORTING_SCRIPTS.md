@@ -223,9 +223,11 @@ Explores the FaRDaP API schema to understand available data structures, field ty
 
 ### Sample Schema Output
 
+> ℹ️ **Note:** This shows the **API schema** (raw data structure). The `documentId` field is used consistently across Bronze and Silver layers.
+
 ```
-Schema Fields:
-├── irs_urn (string) - Primary identifier
+Schema Fields (from API):
+├── documentId (integer) - Document identifier
 ├── incidentNumber (string) 
 ├── incidentDateTime (dateTime)
 ├── incidentType (string) 
@@ -450,11 +452,11 @@ Examines the raw JSON data stored in the Bronze layer, allowing you to inspect a
 ### Sample Usage
 
 ```python
-# Read a specific incident
+# Read a specific incident from Bronze layer (uses documentId)
 df = spark.sql("""
     SELECT raw_json 
     FROM bronze_irs 
-    WHERE irs_urn = 'IRS-2024-001234'
+    WHERE documentId = 123456
 """)
 
 # Parse and display
@@ -468,7 +470,7 @@ print(json.dumps(data, indent=2))
 
 ```json
 {
-  "irs_urn": "IRS-2024-001234",
+  "documentId": 123456,
   "incidentNumber": "FRS/2024/00567",
   "incidentType": "Primary Fire",
   "incidentDateTime": "2024-01-15T14:30:00Z",
@@ -502,7 +504,7 @@ Provides detailed analysis of specific incidents by joining across all Silver ta
 
 ### What It Does
 
-1. **Accepts** an incident identifier (IRS URN or incident number)
+1. **Accepts** an incident identifier (documentId or incident number)
 2. **Queries** all 11 Silver tables
 3. **Joins** data on `documentId`
 4. **Displays** comprehensive incident view
@@ -517,8 +519,11 @@ Provides detailed analysis of specific incidents by joining across all Silver ta
 ### Sample Usage
 
 ```python
-# Set the incident to investigate
-INCIDENT_ID = "IRS-2024-001234"
+# Set the incident to investigate (use documentId from Silver layer)
+DOCUMENT_ID = 123456
+
+# Or query by incident number
+INCIDENT_NUMBER = "FRS/2024/00567"
 
 # The notebook will display:
 # - Incident details (from incidents table)
@@ -535,8 +540,8 @@ INCIDENT_ID = "IRS-2024-001234"
 ═══════════════════════════════════════════════════════════
                    INCIDENT DEEP DIVE
 ═══════════════════════════════════════════════════════════
-Incident: IRS-2024-001234
-Number:   FRS/2024/00567
+Document ID: 123456
+Number:      FRS/2024/00567
 Type:     Primary Fire
 Date:     2024-01-15 14:30:00
 Duration: 127 minutes

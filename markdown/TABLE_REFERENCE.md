@@ -33,7 +33,7 @@ The FaRDaP Analytical Platform uses a **Medallion Architecture** with two data l
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `irs_urn` | String | Primary key - IRS Unique Reference Number |
+| `documentId` | Int64 | Primary key - Document identifier |
 | `raw_json` | String | Complete IRS document as JSON |
 | `_metadata_api_modified` | Timestamp | API-reported last modification time |
 | `_metadata_load_timestamp` | Timestamp | When record was loaded to Bronze |
@@ -42,7 +42,7 @@ The FaRDaP Analytical Platform uses a **Medallion Architecture** with two data l
 
 **Update Mode:** 
 - Full Load: OVERWRITE
-- Incremental: MERGE on `irs_urn`
+- Incremental: MERGE on `documentId`
 
 ---
 
@@ -68,7 +68,7 @@ The FaRDaP Analytical Platform uses a **Medallion Architecture** with two data l
 | Column | Type | Description |
 |:-------|:-----|:------------|
 | `batch_id` | String | UUID for this sync batch |
-| `irs_urn` | String | Document identifier |
+| `documentId` | Int64 | Document identifier |
 | `operation` | String | "INSERT" or "UPDATE" |
 | `old_content_hash` | String | Previous hash (NULL for INSERT) |
 | `new_content_hash` | String | Current hash |
@@ -117,7 +117,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `victimType` | String | Type of victim |
 | `gender` | String | Gender |
@@ -136,7 +136,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `vehicleType` | String | Type of vehicle |
 | `vehicleMake` | String | Manufacturer |
@@ -154,7 +154,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `materialType` | String | Type of hazmat |
 | `quantity` | Double | Amount |
@@ -172,7 +172,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `equipmentType` | String | Type of equipment |
 | `quantity` | Integer | Count used |
@@ -188,7 +188,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `facilityType` | String | Type of facility |
 | `floors` | Integer | Number of floors |
@@ -205,7 +205,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `systemType` | String | Type of system |
 | `operationalStatus` | String | System status |
@@ -222,7 +222,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `systemType` | String | Type of manual system |
 | `used` | Boolean | Whether used |
@@ -238,7 +238,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `infoType` | String | Type of information |
 | `infoValue` | String | Information value |
@@ -254,7 +254,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `qaCategory` | String | QA category |
 | `status` | String | Validation status |
@@ -270,7 +270,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | String | Foreign key to incidents |
+| `documentId` | Int64 | Foreign key to incidents |
 | `_array_index` | Integer | Position in source array |
 | `validationRule` | String | Rule applied |
 | `result` | String | Pass/Fail |
