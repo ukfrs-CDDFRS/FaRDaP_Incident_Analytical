@@ -137,7 +137,7 @@ Run the `Find_Your_FRS_ID.Notebook` to discover your organisation's ID.
 | Notebook | Layer | Purpose | Duration |
 |:---------|:------|:--------|:---------|
 | `01_Bronze_Full_Load` | Bronze | Full extraction of all incidents | 30 min - hours |
-| `02_Bronze_Incremental_Sync` | Bronze | Fetch changed documents only | 1-2 min |
+| `01_Bronze_Incremental_Sync` | Bronze | Fetch changed documents only | 1-2 min |
 | `02_Silver_Full_Transform_Enhanced` | Silver | Transform all Bronze to Silver | 10-30 min |
 | `02_Silver_Incremental_Transform_Enhanced` | Silver | Transform changed records only | Seconds |
 
