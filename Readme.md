@@ -44,6 +44,8 @@ The **FaRDaP Analytical Platform** is a Microsoft Fabric-based enterprise data p
 | 🔮 **Dynamic Schema Discovery** | Automatically adapts to new fields/arrays |
 | 🔄 **Idempotent Operations** | Safe to re-run without data corruption |
 | 📋 **Change Data Capture** | Full audit trail of all data changes |
+| 🔐 **Smart Token Management** | Time-based + count-based refresh prevents auth failures |
+| 🌐 **API Compliance** | User-Agent header with FRS identification per FaRDaP spec |
 | 🌍 **Environment Support** | Development and Production configurations |
 | 🔗 **Azure DevOps Integration** | Git-based source control and CI/CD |
 
@@ -220,6 +222,18 @@ All notebooks use `var_library_fardap` for configuration:
 | `MAX_WORKERS` | 32 | Parallel fetch threads |
 | `MAX_ATTEMPTS` | 5 | Retry attempts |
 | `BASE_BACKOFF` | 0.5s | Initial retry delay |
+| `REFRESH_EVERY` | 25,000 | Count-based token refresh interval |
+
+### Authentication Features
+
+| Feature | Implementation |
+|:--------|:---------------|
+| **Token Expiry Tracking** | Captures `expiresIn` from API, calculates expiry time |
+| **Time-Based Refresh** | Proactively refreshes when < 5 minutes remaining |
+| **Count-Based Refresh** | Re-authenticates every 25,000 documents (belt-and-suspenders) |
+| **User-Agent Header** | `Fabric/FaRDaP-Analytical-Platform` on all API requests |
+| **Thread-Safe Updates** | Token updates protected by lock for parallel processing |
+| **Expiry Logging** | Logs token expiry time on authentication for monitoring |
 
 ---
 
@@ -230,6 +244,7 @@ All notebooks use `var_library_fardap` for configuration:
 | Issue | Cause | Solution |
 |:------|:------|:---------|
 | Authentication Failed (401) | Invalid credentials | Check Key Vault secrets |
+| Token Expired Mid-Process | Long-running job | Should auto-refresh; check logs for "Token expiring soon" |
 | Rate Limited (429) | Too many API requests | Reduce `MAX_WORKERS` |
 | "State table not found" | Prerequisites missing | Run Full Load first |
 | "No documents retrieved" | Wrong FRS_ID | Verify FRS_ID and permissions |

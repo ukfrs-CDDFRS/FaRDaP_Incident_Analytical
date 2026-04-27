@@ -138,9 +138,10 @@ UPDATED_FROM = UPDATED_FROM_DT.strftime("%Y-%m-%dT%H:%MZ")
 # Authentication and session helpers
 token_lock = threading.Lock()
 shared_token = None
+token_expiry = None
 
 def authenticate():
-    global shared_token
+    global shared_token, token_expiry
     try:
         resp = requests.post(
             f'{API_BASE_URL}/api/v1/auth/init',
@@ -149,22 +150,48 @@ def authenticate():
             timeout=30
         )
         resp.raise_for_status()
-        new_token = resp.json().get('tokens', {}).get('accessToken')
+        tokens = resp.json().get('tokens', {})
+        new_token = tokens.get('accessToken')
+        expires_in = tokens.get('expiresIn', 3600)  # Default to 1 hour
+        
         if not new_token:
             raise RuntimeError('No access token in auth response')
+        
+        # Calculate token expiry time
+        expiry_time = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+        
         with token_lock:
             shared_token = new_token
-        print(f'✅ Authenticated successfully')
+            token_expiry = expiry_time
+        
+        print(f'✅ Authenticated successfully (expires at {expiry_time.strftime("%H:%M:%S UTC")})')
         return new_token
     except Exception as e:
         print(f'❌ Authentication failed: {e}')
         raise
 
+def is_token_expiring(buffer_seconds=300):
+    """Check if token will expire within buffer_seconds (default 5 minutes)"""
+    with token_lock:
+        if token_expiry is None:
+            return True
+        time_remaining = (token_expiry - datetime.now(timezone.utc)).total_seconds()
+        return time_remaining < buffer_seconds
+
 def make_session():
+    # Proactive token refresh if expiring soon
+    if is_token_expiring():
+        print('🔄 Token expiring soon, refreshing...')
+        authenticate()
+    
     with token_lock:
         token_snapshot = shared_token
     s = requests.Session()
-    s.headers.update({'Authorization': f'Bearer {token_snapshot}', 'Content-Type': 'application/json'})
+    s.headers.update({
+        'Authorization': f'Bearer {token_snapshot}',
+        'Content-Type': 'application/json',
+        'User-Agent': f'Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}'
+    })
     return s
 
 authenticate()

@@ -236,8 +236,14 @@ BATCH_SIZE = 10000      # Decrease if API rate limiting occurs
 MAX_WORKERS = 32        # Decrease if getting 429 errors
 MAX_ATTEMPTS = 5        # Increase for unreliable networks
 BASE_BACKOFF = 0.5      # Increase if frequent retries needed
-REFRESH_EVERY = 25000   # Decrease if tokens expire quickly
+REFRESH_EVERY = 25000   # Count-based token refresh (backup mechanism)
 ```
+
+**Authentication Notes:**
+- **Time-based refresh:** Primary mechanism, automatically refreshes when < 5 minutes remaining
+- **Count-based refresh:** Backup mechanism defined by `REFRESH_EVERY`
+- **Belt-and-suspenders:** Both mechanisms run independently for maximum reliability
+- Token expiry tracked from API response (typically 3600 seconds / 1 hour)
 
 ### Performance Recommendations
 
@@ -246,7 +252,7 @@ REFRESH_EVERY = 25000   # Decrease if tokens expire quickly
 | Getting 429 (Rate Limited) errors | Reduce `MAX_WORKERS` to 16 or 8 |
 | Slow API responses | Reduce `BATCH_SIZE` to 5,000 |
 | Frequent timeouts | Increase `MAX_ATTEMPTS` to 10 |
-| Token expiration issues | Reduce `REFRESH_EVERY` to 10,000 |
+| Token expiration issues | Time-based refresh should auto-handle; check logs |
 | Fast, reliable network | Increase `MAX_WORKERS` to 64 |
 
 ### Expected Performance Metrics

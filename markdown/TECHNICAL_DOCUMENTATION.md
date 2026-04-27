@@ -13,6 +13,7 @@
   - [Full Transform](#silver-full-transform)
   - [Incremental Transform](#silver-incremental-transform)
 - [Semantic Model](#semantic-model)
+- [Authentication & Token Management](#authentication--token-management)
 - [Code Patterns](#code-patterns)
 
 ---
@@ -51,8 +52,11 @@ Step 1: Configuration
 
 Step 2: Authentication
 ├── POST /api/v1/auth/init with credentials
-├── Extract accessToken from response
-└── Store token for subsequent requests (thread-safe)
+├── Extract accessToken and expiresIn from response
+├── Calculate token expiry timestamp
+├── Store token + expiry (thread-safe)
+├── Set User-Agent: Fabric/FaRDaP-Analytical-Platform
+└── Log authentication with expiry time
 
 Step 3: Search All Incident IDs
 ├── POST /api/v1/document/search
@@ -62,9 +66,11 @@ Step 3: Search All Incident IDs
 
 Step 4: Parallel Document Fetch
 ├── ThreadPoolExecutor with MAX_WORKERS threads
+├── Time-based token refresh (if < 5 min remaining)
+├── Count-based token refresh (every REFRESH_EVERY documents)
 ├── GET /api/v1/document/{documentId}?frsId={FRS_ID}
+├── Include User-Agent header on all requests
 ├── Retry logic: exponential backoff on 429/5xx errors
-├── Re-authenticate every REFRESH_EVERY documents
 └── Extract: documentId, raw_json, change_ts, sync_timestamp
 
 Step 5: Create DataFrame
@@ -400,18 +406,239 @@ relationship
 
 ---
 
-## Code Patterns
+## Authentication & Token Management
 
-### Thread-Safe Authentication
+**Updated:** April 27, 2026  
+**Applies to:** Bronze Full Load, Bronze Incremental Sync
+
+### Overview
+
+The platform implements a robust authentication system with:
+- **Time-based token refresh** - Proactive refresh before expiry
+- **Count-based token refresh** - Backup refresh mechanism
+- **User-Agent header** - FaRDaP API specification compliance
+- **Thread-safe updates** - Safe for parallel processing
+
+### Authentication Flow
+
+```
+1. Initial Authentication
+   ├── POST /api/v1/auth/init
+   ├── Credentials from Azure Key Vault
+   ├── Receive: accessToken, expiresIn (3600 seconds)
+   └── Calculate: token_expiry = now + expiresIn
+
+2. Token Storage (Thread-Safe)
+   ├── Lock acquisition
+   ├── Store: shared_token, token_expiry
+   └── Lock release
+
+3. Session Creation (Before Each API Call)
+   ├── Check: is_token_expiring(buffer=300)?
+   │   ├── YES → Re-authenticate
+   │   └── NO → Continue
+   ├── Create session with current token
+   └── Add headers:
+       ├── Authorization: Bearer {token}
+       ├── Content-Type: application/json
+       └── User-Agent: Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}
+```
+
+### Token Refresh Mechanisms
+
+#### 1. Time-Based Refresh (Primary)
+
+**Trigger:** Token expires within 5 minutes
+
+```python
+def is_token_expiring(buffer_seconds=300):
+    """Check if token will expire within buffer_seconds"""
+    if token_expiry is None:
+        return True
+    time_remaining = (token_expiry - datetime.now(timezone.utc)).total_seconds()
+    return time_remaining < buffer_seconds
+
+def make_session():
+    if is_token_expiring():
+        print('🔄 Token expiring soon, refreshing...')
+        authenticate()
+    # ... create session
+```
+
+**Benefits:**
+- Prevents 401 errors on long-running jobs
+- Proactive (refreshes before expiry, not after)
+- Independent of processing speed
+
+#### 2. Count-Based Refresh (Backup)
+
+**Trigger:** Every 25,000 documents processed
+
+```python
+if completed % REFRESH_EVERY == 0:
+    authenticate()
+```
+
+**Benefits:**
+- Redundancy if time-based fails
+- Prevents "forgetting" to refresh
+- Minimal overhead
+
+### Belt-and-Suspenders Approach
+
+Both mechanisms run independently. Whichever triggers first causes refresh:
+
+| Scenario | Time-Based | Count-Based | Winner |
+|----------|------------|-------------|--------|
+| Fast processing (< 1 hour) | ❌ Not triggered | ✅ Triggers first | Count |
+| Slow API (> 1 hour) | ✅ Triggers first | ❌ May not reach count | Time |
+| Normal load (mixed speed) | ✅ Usually first | ✅ Backup | Both work |
+
+### User-Agent Header
+
+**Header Value:** `Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}`
+
+**Purpose:**
+- FaRDaP API specification compliance
+- Fire service identification in API logs
+- Client identification for API support
+- Rate limiting and usage analytics
+- Prevents request rejection
+
+**Implementation:**
+```python
+s.headers.update({
+    'Authorization': f'Bearer {token}',
+    'Content-Type': 'application/json',
+    'User-Agent': f'Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}'
+})
+```
+
+**Example:** For FRS_ID="17", header becomes `Fabric/FaRDaP-Analytical-Platform/FRS-17`
+
+### Logging
+
+**Authentication Success:**
+```
+✅ Authenticated successfully (expires at 14:32:15 UTC)
+```
+
+**Token Refresh Trigger:**
+```
+🔄 Token expiring soon, refreshing...
+✅ Authenticated successfully (expires at 15:32:15 UTC)
+```
+
+**Authentication Failure:**
+```
+❌ Authentication failed: [error details]
+```
+
+### Thread Safety
+
+All token operations are protected by `token_lock`:
 
 ```python
 token_lock = threading.Lock()
+
+# Writing token
+with token_lock:
+    shared_token = new_token
+    token_expiry = expiry_time
+
+# Reading token
+with token_lock:
+    token_snapshot = shared_token
+```
+
+**Guarantees:**
+- No race conditions with 32 parallel workers
+- Atomic token updates
+- Consistent reads across threads
+
+### Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `REFRESH_EVERY` | 25,000 | Count-based refresh interval |
+| `buffer_seconds` | 300 | Time-based refresh buffer (5 min) |
+| `expiresIn` | 3600 | Token lifetime from API (1 hour) |
+
+### Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| "Token expiring soon" every few minutes | API returning short expiry | Check API response `expiresIn` value |
+| 401 errors mid-process | Token refresh not triggering | Check logs for refresh attempts |
+| Frequent re-authentication | Count too low or buffer too large | Adjust `REFRESH_EVERY` or `buffer_seconds` |
+| Missing User-Agent warnings | Header not included | Verify `make_session()` implementation |
+
+### Best Practices
+
+✅ **Do:**
+- Monitor logs for token expiry patterns
+- Adjust `REFRESH_EVERY` based on your dataset size
+- Keep 5-minute buffer for safety
+- Include User-Agent on ALL API requests
+
+❌ **Don't:**
+- Remove time-based refresh (count-based alone is risky)
+- Reduce buffer below 3 minutes (insufficient for retries)
+- Hardcode tokens (always use Key Vault)
+- Skip User-Agent header (API may reject)
+
+---
+
+## Code Patterns
+
+### Thread-Safe Authentication with Token Expiry
+
+```python
+from datetime import datetime, timezone, timedelta
+
+token_lock = threading.Lock()
 shared_token = None
+token_expiry = None
 
 def authenticate():
-    global shared_token
+    global shared_token, token_expiry
+    resp = requests.post(
+        f'{API_BASE_URL}/api/v1/auth/init',
+        json={'username': USERNAME, 'password': PASSWORD}
+    )
+    resp.raise_for_status()
+    tokens = resp.json().get('tokens', {})
+    new_token = tokens.get('accessToken')
+    expires_in = tokens.get('expiresIn', 3600)
+    
+    expiry_time = datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    
     with token_lock:
         shared_token = new_token
+        token_expiry = expiry_time
+    
+    print(f'✅ Authenticated (expires at {expiry_time.strftime("%H:%M:%S UTC")})')
+
+def is_token_expiring(buffer_seconds=300):
+    with token_lock:
+        if token_expiry is None:
+            return True
+        return (token_expiry - datetime.now(timezone.utc)).total_seconds() < buffer_seconds
+
+def make_session():
+    if is_token_expiring():
+        authenticate()
+    
+    with token_lock:
+        token_snapshot = shared_token
+    
+    s = requests.Session()
+    s.headers.update({
+        'Authorization': f'Bearer {token_snapshot}',
+        'Content-Type': 'application/json',
+        'User-Agent': f'Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}'
+    })
+    return s
 ```
 
 ### Idempotent MERGE Pattern
