@@ -81,8 +81,8 @@ Complete data extraction and transformation for:
 1. **Bronze Full Load** (`01_Bronze_Full_Load`)
    - Fetch all IRS documents from API
    - Count records and plan parallel fetch
-   - Write to `bronze_irs` table (OVERWRITE mode)
-   - Update watermark in `bronze_irs_watermark`
+   - Write to `fardap_bronze_incidents` table (OVERWRITE mode)
+   - Update watermark in `fardap_sync_state`
 
 2. **Silver Full Transform** (`02_Silver_Full_Transform_Enhanced`)
    - Read entire bronze table
@@ -151,7 +151,7 @@ Keep data current with minimal processing:
 1. **Bronze Incremental Sync** (`01_Bronze_Incremental_Sync`)
    - Read watermark from previous run
    - Fetch only records modified since watermark
-   - MERGE into `bronze_irs` table
+   - MERGE into `fardap_bronze_incidents` table
    - Update watermark
 
 2. **Silver Incremental Transform** (`02_Silver_Incremental_Transform_Enhanced`)
@@ -197,8 +197,8 @@ Keep data current with minimal processing:
 
 | Layer | Tables Written | Depends On |
 |:------|:---------------|:-----------|
-| Bronze | `bronze_irs`, `bronze_irs_watermark`, `bronze_irs_cdc_log` | FaRDaP API |
-| Silver | 11 tables (incidents, victim, vehicle, etc.) | `bronze_irs`, `bronze_irs_cdc_log` |
+| Bronze | `fardap_bronze_incidents`, `fardap_sync_state`, `fardap_bronze_cdc_log` | FaRDaP API |
+| Silver | 11 tables (`fardap_silver_incidents`, `fardap_silver_victim`, etc.) | `fardap_bronze_incidents`, `fardap_bronze_cdc_log` |
 
 ---
 

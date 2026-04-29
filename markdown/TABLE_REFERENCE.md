@@ -27,65 +27,62 @@ The FaRDaP Analytical Platform uses a **Medallion Architecture** with two data l
 
 ## Bronze Layer Tables
 
-### bronze_irs
+### fardap_bronze_incidents
 
-**Description:** Raw IRS documents from FaRDaP API
+**Description:** Raw incident documents from the FaRDaP API
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `documentId` | Int64 | Primary key - Document identifier |
-| `raw_json` | String | Complete IRS document as JSON |
-| `_metadata_api_modified` | Timestamp | API-reported last modification time |
-| `_metadata_load_timestamp` | Timestamp | When record was loaded to Bronze |
-| `_metadata_source` | String | Source identifier (e.g., "fardap_api") |
-| `_metadata_content_hash` | String | MD5 hash of raw_json for change detection |
+| `documentId` | String | Primary key — FaRDaP document identifier |
+| `raw_json` | String | Complete incident document as JSON |
+| `sync_timestamp` | Timestamp | When the record was fetched from the API |
+| `change_ts` | String | API-reported `dateUpdated` (ISO 8601) |
+| `content_hash` | String | SHA-256 hash of `raw_json` for change detection |
 
-**Update Mode:** 
+**Update Mode:**
 - Full Load: OVERWRITE
-- Incremental: MERGE on `documentId`
+- Incremental: MERGE on `documentId` (only when `content_hash` differs)
 
 ---
 
-### bronze_irs_watermark
+### fardap_sync_state
 
-**Description:** High-water mark for incremental sync
+**Description:** Bronze sync watermark — single row tracking the last successful sync point
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `watermark_id` | String | Always "latest" |
-| `last_sync_timestamp` | Timestamp | When last sync completed |
-| `last_api_modified_max` | Timestamp | Highest `modifiedDateTime` seen |
-| `records_processed` | Long | Count of records in last sync |
+| `last_watermark` | String | Highest `change_ts` (or `sync_timestamp` fallback) processed in the last run |
 
 **Update Mode:** OVERWRITE (single row)
 
+**Usage:** Read at the start of `01_Bronze_Incremental_Sync` to drive the `dateUpdated > {last_watermark}` API filter.
+
 ---
 
-### bronze_irs_cdc_log
+### fardap_bronze_cdc_log
 
 **Description:** Change Data Capture log for incremental processing
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `batch_id` | String | UUID for this sync batch |
-| `documentId` | Int64 | Document identifier |
-| `operation` | String | "INSERT" or "UPDATE" |
-| `old_content_hash` | String | Previous hash (NULL for INSERT) |
-| `new_content_hash` | String | Current hash |
-| `_metadata_api_modified` | Timestamp | API modification time |
-| `_metadata_cdc_timestamp` | Timestamp | When CDC record was created |
+| `documentId` | String | Document identifier |
+| `op_type` | String | `insert` (new document) or `update` (existing document re-fetched) |
+| `change_ts` | String | API-reported `dateUpdated` |
+| `sync_timestamp` | Timestamp | When this CDC record was written |
 
 **Update Mode:** APPEND (immutable log)
 
-**Usage:** Silver layer reads this to determine which documents to process
+**Usage:** Silver layer reads this to determine which documents to re-flatten.
 
 ---
 
 ## Silver Layer Tables
 
-All Silver tables share a common primary key (`documentId`) that maps to the IRS document.
+> **Naming convention:** All Silver tables are prefixed `fardap_silver_*` in the Lakehouse. The short names below (`incidents`, `victim`, …) are the entity names — the actual table names are `fardap_silver_incidents`, `fardap_silver_victim`, etc.
 
-### incidents (Main Fact Table)
+All Silver tables share a common primary key (`documentId`) that maps to the FaRDaP incident document.
+
+### fardap_silver_incidents (Main Fact Table)
 
 **Description:** Core incident records with flattened top-level fields
 
@@ -111,7 +108,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### victim
+### fardap_silver_victim
 
 **Description:** Casualty/victim information per incident
 
@@ -130,7 +127,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### vehicle
+### fardap_silver_vehicle
 
 **Description:** Vehicle involvement records
 
@@ -148,7 +145,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### hazardousmaterial
+### fardap_silver_hazardousmaterial
 
 **Description:** Hazardous materials involved
 
@@ -166,7 +163,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### equipment
+### fardap_silver_equipment
 
 **Description:** Equipment used during response
 
@@ -182,7 +179,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### buildingfacility
+### fardap_silver_buildingfacility
 
 **Description:** Building/facility information
 
@@ -199,7 +196,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### system
+### fardap_silver_system
 
 **Description:** Fire detection/suppression systems
 
@@ -216,7 +213,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### manualsystem
+### fardap_silver_manualsystem
 
 **Description:** Manual firefighting systems
 
@@ -232,7 +229,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### additionalinfo
+### fardap_silver_additionalinfo
 
 **Description:** Extended incident information
 
@@ -248,7 +245,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### qasummaries
+### fardap_silver_qasummaries
 
 **Description:** Quality assurance validation summaries
 
@@ -264,7 +261,7 @@ All Silver tables share a common primary key (`documentId`) that maps to the IRS
 
 ---
 
-### validation
+### fardap_silver_validation
 
 **Description:** Data validation results
 

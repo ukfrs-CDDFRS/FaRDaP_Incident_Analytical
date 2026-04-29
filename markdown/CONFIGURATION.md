@@ -220,7 +220,7 @@ print(f"Configured FRS ID: {FRS_ID}")
 
 | Parameter | Default | Description |
 |:----------|:--------|:------------|
-| `BATCH_SIZE` | 10,000 | Records per API search page |
+| `BATCH_SIZE` | 1,000 | Records per API search page |
 | `MAX_WORKERS` | 32 | Parallel fetch threads |
 | `MAX_ATTEMPTS` | 5 | Retry attempts for failed requests |
 | `BASE_BACKOFF` | 0.5s | Initial retry delay (exponential) |
@@ -232,7 +232,7 @@ These parameters are defined in the notebook code and can be modified:
 
 ```python
 # In Bronze notebooks
-BATCH_SIZE = 10000      # Decrease if API rate limiting occurs
+BATCH_SIZE = 1000      # Decrease if API rate limiting occurs
 MAX_WORKERS = 32        # Decrease if getting 429 errors
 MAX_ATTEMPTS = 5        # Increase for unreliable networks
 BASE_BACKOFF = 0.5      # Increase if frequent retries needed
@@ -250,7 +250,7 @@ REFRESH_EVERY = 25000   # Count-based token refresh (backup mechanism)
 | Scenario | Adjustment |
 |:---------|:-----------|
 | Getting 429 (Rate Limited) errors | Reduce `MAX_WORKERS` to 16 or 8 |
-| Slow API responses | Reduce `BATCH_SIZE` to 5,000 |
+| Slow API responses | Reduce `BATCH_SIZE` to 500 |
 | Frequent timeouts | Increase `MAX_ATTEMPTS` to 10 |
 | Token expiration issues | Time-based refresh should auto-handle; check logs |
 | Fast, reliable network | Increase `MAX_WORKERS` to 64 |

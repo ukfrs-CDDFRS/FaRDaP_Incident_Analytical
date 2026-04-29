@@ -437,7 +437,7 @@ Examines the raw JSON data stored in the Bronze layer, allowing you to inspect a
 
 ### What It Does
 
-1. **Reads** from `bronze_irs` table
+1. **Reads** from `fardap_bronze_incidents` table
 2. **Parses** JSON from `raw_json` column
 3. **Pretty prints** structured data
 4. **Enables** ad-hoc exploration
@@ -455,7 +455,7 @@ Examines the raw JSON data stored in the Bronze layer, allowing you to inspect a
 # Read a specific incident from Bronze layer (uses documentId)
 df = spark.sql("""
     SELECT raw_json 
-    FROM bronze_irs 
+    FROM fardap_bronze_incidents 
     WHERE documentId = 123456
 """)
 
