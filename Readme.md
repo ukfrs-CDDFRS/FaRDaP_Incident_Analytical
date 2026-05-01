@@ -122,11 +122,11 @@ Run the `Find_Your_FRS_ID.Notebook` to discover your organisation's ID.
 
 | Document | Description |
 |:---------|:------------|
-| [📖 Technical Documentation](markdown/TECHNICAL_DOCUMENTATION.md) | Complete technical reference |
-| [🔧 Configuration Guide](markdown/CONFIGURATION.md) | Environment setup and variables |
-| [📊 Data Pipeline Guide](markdown/DATA_PIPELINES.md) | Pipeline execution and scheduling |
-| [🗄️ Table Reference](markdown/TABLE_REFERENCE.md) | All Bronze and Silver tables |
-| [🛠️ Supporting Scripts](markdown/SUPPORTING_SCRIPTS.md) | Utility notebooks for exploration |
+| [📖 Technical Documentation](guideance/TECHNICAL_DOCUMENTATION.md) | Complete technical reference |
+| [🔧 Configuration Guide](guideance/CONFIGURATION.md) | Environment setup and variables |
+| [📊 Data Pipeline Guide](guideance/DATA_PIPELINES.md) | Pipeline execution and scheduling |
+| [🗄️ Table Reference](guideance/TABLE_REFERENCE.md) | All Bronze and Silver tables |
+| [🛠️ Supporting Scripts](guideance/SUPPORTING_SCRIPTS.md) | Utility notebooks for exploration |
 
 ---
 
@@ -160,7 +160,7 @@ Run the `Find_Your_FRS_ID.Notebook` to discover your organisation's ID.
 | `Incident_Deep_Dive` | Deep dive into single incident |
 | `dup_frsincidentnumber` | Find duplicate incident numbers |
 
-See [Supporting Scripts Guide](markdown/SUPPORTING_SCRIPTS.md) for detailed documentation.
+See [Supporting Scripts Guide](guideance/SUPPORTING_SCRIPTS.md) for detailed documentation.
 
 ---
 
