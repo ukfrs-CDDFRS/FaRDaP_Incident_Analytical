@@ -1,1 +1,14 @@
-[]
+[
+  {
+    "name": "UPRN_Geographies",
+    "path": "/Files",
+    "target": {
+      "type": "OneLake",
+      "oneLake": {
+        "path": "Files/UPRN_Geographies",
+        "itemId": "3e6998a6-26a9-447a-adb4-05f109d25a08",
+        "workspaceId": "ed71b21b-75f9-4f90-b327-aa6109317b9e"
+      }
+    }
+  }
+]
