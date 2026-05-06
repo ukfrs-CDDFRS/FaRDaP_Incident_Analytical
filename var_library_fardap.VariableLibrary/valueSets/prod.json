@@ -13,6 +13,10 @@
     {
       "name": "KEY_VAULT_URI",
       "value": "https://devfardap.vault.azure.net/"
+    },
+    {
+      "name": "OS_Boundary_Data_package_ID",
+      "value": 6344
     }
   ]
 }
