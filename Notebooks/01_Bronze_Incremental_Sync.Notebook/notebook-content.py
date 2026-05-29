@@ -406,6 +406,7 @@ assert len(results) > 0, '❌ No documents retrieved'
 # Build DataFrame
 df_raw = spark.createDataFrame(pd.DataFrame(results))
 df_raw = df_raw.withColumn('sync_timestamp', F.col('sync_timestamp').cast('timestamp'))
+df_raw = df_raw.withColumn('change_ts', F.col('change_ts').cast('timestamp'))
 df_raw = df_raw.withColumn('content_hash', F.sha2(F.col('raw_json'), 256))
 
 print(f'📊 Created DataFrame with {df_raw.count():,} rows')
