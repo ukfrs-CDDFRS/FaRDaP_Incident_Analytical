@@ -68,7 +68,8 @@
                 }
               ]
             }
-          ]
+          ],
+          "ifFalseActivities": []
         },
         "name": "If_HasChanges",
         "dependsOn": [
@@ -76,6 +77,39 @@
             "activity": "01_Bronze_Incremental_Sync",
             "dependencyConditions": [
               "Succeeded"
+            ]
+          }
+        ]
+      },
+      {
+        "type": "Office365Email",
+        "typeProperties": {
+          "body": "<p>@{activity('01_Bronze_Incremental_Sync').output}</p>\n<p><br></p>\n<p></p>",
+          "to": "aaron.north@ddfire.gov.uk",
+          "subject": "Faild FaRDaP sync to lakehouse"
+        },
+        "externalReferences": {
+          "connection": "82eab235-3ae5-409f-83e0-5305c0709eda"
+        },
+        "policy": {
+          "timeout": "0.12:00:00",
+          "retry": 0,
+          "retryIntervalInSeconds": 30,
+          "secureInput": false,
+          "secureOutput": false
+        },
+        "name": "Office365Email1",
+        "dependsOn": [
+          {
+            "activity": "01_Bronze_Incremental_Sync",
+            "dependencyConditions": [
+              "Failed"
+            ]
+          },
+          {
+            "activity": "If_HasChanges",
+            "dependencyConditions": [
+              "Failed"
             ]
           }
         ]
