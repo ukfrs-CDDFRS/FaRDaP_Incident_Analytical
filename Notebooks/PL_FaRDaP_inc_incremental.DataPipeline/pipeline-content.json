@@ -22,7 +22,7 @@
         "type": "IfCondition",
         "typeProperties": {
           "expression": {
-            "value": "@not(equals(activity('01_Bronze_Incremental_Sync').output.result.exitValue, 'no_changes'))",
+            "value": "@not(or(contains(string(activity('01_Bronze_Incremental_Sync').output), '\"exitValue\":\"no_changes\"'), contains(string(activity('01_Bronze_Incremental_Sync').output), '\"exitValue\": \"no_changes\"')))",
             "type": "Expression"
           },
           "ifTrueActivities": [
