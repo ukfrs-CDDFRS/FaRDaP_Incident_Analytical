@@ -98,6 +98,33 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 from pyspark.sql import functions as F
 
+
+def parse_api_datetime(value):
+    """Parse API/state timestamps into timezone-aware UTC datetimes."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        iso = value.strip()
+        if not iso:
+            return None
+        if iso.endswith("Z"):
+            iso = iso[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(iso)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+def to_api_utc_millis(dt):
+    """Format datetime as UTC ISO8601 with millisecond precision and trailing Z."""
+    dt_utc = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    dt_utc = dt_utc.astimezone(timezone.utc)
+    return dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
 # Get last watermark
 DEFAULT_LOOKBACK_MINUTES = 5
 
@@ -136,7 +163,7 @@ except Exception as e:
     UPDATED_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
     print("📍 Using 5-minute lookback")
 
-UPDATED_FROM = UPDATED_FROM_DT.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+UPDATED_FROM = to_api_utc_millis(UPDATED_FROM_DT)
 
 # Authentication and session helpers
 token_lock = threading.Lock()
@@ -392,7 +419,25 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             refresh_access_token()
 
 print(f'\n✅ Fetch complete: {len(results):,} / {len(changed_ids):,} documents fetched')
-assert len(results) > 0, '❌ No documents retrieved'
+
+# Guard against inclusive range boundary records: keep only strictly newer changes.
+strictly_new_results = []
+boundary_filtered = 0
+for rec in results:
+    rec_change_dt = parse_api_datetime(rec.get('change_ts'))
+    if rec_change_dt is not None and rec_change_dt <= UPDATED_FROM_DT:
+        boundary_filtered += 1
+        continue
+    strictly_new_results.append(rec)
+
+if boundary_filtered:
+    print(f'ℹ️  Filtered {boundary_filtered:,} boundary record(s) with change_ts <= watermark')
+
+results = strictly_new_results
+
+if len(results) == 0:
+    print('\n✅ No strictly newer changes after boundary filtering. Exiting.')
+    notebookutils.notebook.exit("no_changes")
 
 # METADATA ********************
 
@@ -479,9 +524,12 @@ watermark = df_raw.select(F.coalesce(F.col('change_ts'), F.col('sync_timestamp')
 
 # Convert to string format for consistency with state table
 if watermark:
-    watermark_str = watermark.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(watermark, 'strftime') else str(watermark)
+    watermark_dt = parse_api_datetime(watermark)
+    if watermark_dt is None and hasattr(watermark, 'to_pydatetime'):
+        watermark_dt = parse_api_datetime(watermark.to_pydatetime())
+    watermark_str = to_api_utc_millis(watermark_dt) if watermark_dt else str(watermark)
 else:
-    watermark_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    watermark_str = to_api_utc_millis(datetime.now(timezone.utc))
 
 df_state = spark.createDataFrame([(watermark_str,)], ['last_watermark'])
 
