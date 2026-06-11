@@ -455,7 +455,8 @@ df_raw.createOrReplaceTempView('staging_incremental')
 
 # Determine op_type from current Bronze membership BEFORE the MERGE.
 # Existing documentId -> 'update'; new documentId -> 'insert'.
-existing_ids = spark.table(TABLE_FULL).select('documentId').distinct()
+# IMPORTANT: Cache to force evaluation NOW, before the MERGE updates the table
+existing_ids = spark.table(TABLE_FULL).select('documentId').distinct().cache()
 
 # Diagnostic: Check which IDs are new vs existing
 new_ids = df_raw.join(existing_ids, on='documentId', how='left_anti').select('documentId').collect()
@@ -497,6 +498,12 @@ print(f'✅ Merge completed')
 # Append to CDC log
 df_cdc = df_tagged
 
+# Diagnostic: Verify op_type distribution BEFORE writing
+op_type_counts = df_cdc.groupBy('op_type').count().collect()
+print(f'\n📊 CDC DataFrame op_type distribution (BEFORE write):')
+for row in op_type_counts:
+    print(f'   {row.op_type}: {row["count"]}')
+
 print(f'\n📋 Appending {df_cdc.count():,} records to {TABLE_CDC}...')
 df_cdc.write \
     .format('delta') \
@@ -505,6 +512,13 @@ df_cdc.write \
     .saveAsTable(TABLE_CDC)
 
 print(f'✅ CDC log appended')
+
+# Diagnostic: Verify what actually got written
+recent_cdc = spark.table(TABLE_CDC).orderBy(F.col('sync_timestamp').desc()).limit(100)
+written_counts = recent_cdc.groupBy('op_type').count().collect()
+print(f'\n📊 CDC Table op_type distribution (AFTER write, last 100 records):')
+for row in written_counts:
+    print(f'   {row.op_type}: {row["count"]}')
 
 # METADATA ********************
 

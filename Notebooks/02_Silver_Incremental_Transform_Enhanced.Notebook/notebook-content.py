@@ -124,6 +124,12 @@ if len(changed_ids) == 0:
 
 print(f"[INFO] Found {len(changed_ids)} changed records in Bronze CDC")
 
+# Diagnostic: Check op_type distribution from Bronze CDC
+bronze_op_types = df_bronze_cdc.groupBy("op_type").count().collect()
+print(f"\n📊 Bronze CDC op_type distribution:")
+for row in bronze_op_types:
+    print(f"   {row.op_type}: {row['count']}")
+
 # Fetch current Bronze records
 df_bronze_changed = spark.table(TABLE_BRONZE).filter(
     F.col("documentId").isin(changed_ids)
@@ -713,6 +719,13 @@ df_silver_cdc.write.format("delta").mode("append").option("mergeSchema", "true")
 
 print(f"[INFO] Appended {truly_changed_count} records to {TABLE_SILVER_CDC}")
 print(f"[INFO] Change descriptions generated: {len(change_descriptions)}")
+
+# Diagnostic: Verify what was written
+recent_silver_cdc = spark.table(TABLE_SILVER_CDC).orderBy(F.col("cdc_timestamp").desc()).limit(100)
+written_op_types = recent_silver_cdc.groupBy("op_type").count().collect()
+print(f"\n📊 Silver CDC op_type distribution (last 100 records):")
+for row in written_op_types:
+    print(f"   {row.op_type}: {row['count']}")
 
 # METADATA ********************
 
