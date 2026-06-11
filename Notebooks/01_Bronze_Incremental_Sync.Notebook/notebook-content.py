@@ -33,12 +33,11 @@
 # 
 # **Input:**
 # - Last watermark from `fardap_sync_state` (highest `change_ts` processed)
-# - Processed IDs at watermark (for collision handling)
 # 
 # **Output tables:**
 # - `fardap_bronze_incidents` - Updated with new/changed records (MERGE mode)
 # - `fardap_bronze_cdc_log` - Appended with change tracking
-# - `fardap_sync_state` - Updated watermark + processed IDs
+# - `fardap_sync_state` - Updated watermark
 # 
 # **Duration:** 1-2 minutes (network bound)
 # 
@@ -127,16 +126,15 @@ def to_api_utc_millis(dt):
     dt_utc = dt_utc.astimezone(timezone.utc)
     return dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
-# Get last watermark and processed IDs
+# Get last watermark
 DEFAULT_LOOKBACK_MINUTES = 5
-PROCESSED_IDS_AT_WATERMARK = set()
 
 try:
     watermark_df = spark.table(TABLE_STATE)
-
+    
     rows = (
         watermark_df
-        .select("last_watermark", "processed_ids")
+        .select("last_watermark")
         .orderBy(F.col("last_watermark").desc())
         .limit(1)
         .collect()
@@ -159,17 +157,7 @@ try:
         else:
             UPDATED_FROM_DT = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
-        # Load processed IDs at this watermark (for collision handling)
-        processed_ids_raw = rows[0][1] if len(rows[0]) > 1 else None
-        if processed_ids_raw:
-            if isinstance(processed_ids_raw, list):
-                PROCESSED_IDS_AT_WATERMARK = set(processed_ids_raw)
-            elif isinstance(processed_ids_raw, str) and processed_ids_raw.strip():
-                PROCESSED_IDS_AT_WATERMARK = set(processed_ids_raw.split(','))
-
         print(f"📍 Using stored watermark: {UPDATED_FROM_DT}")
-        if PROCESSED_IDS_AT_WATERMARK:
-            print(f"📍 Will skip {len(PROCESSED_IDS_AT_WATERMARK)} already-processed ID(s) at this watermark")
 
 except Exception as e:
     print(f"⚠️  Could not read state table: {e}")
@@ -435,29 +423,6 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
 
 print(f'\n✅ Fetch complete: {len(results):,} / {len(changed_ids):,} documents fetched')
 
-# Filter out already-processed IDs at the current watermark (collision handling)
-strictly_new_results = []
-already_processed = 0
-for rec in results:
-    doc_id = rec.get('documentId')
-    rec_change_dt = parse_api_datetime(rec.get('change_ts'))
-    
-    # Skip if this ID was already processed at the exact watermark timestamp
-    if rec_change_dt is not None and rec_change_dt == UPDATED_FROM_DT and doc_id in PROCESSED_IDS_AT_WATERMARK:
-        already_processed += 1
-        continue
-    
-    strictly_new_results.append(rec)
-
-if already_processed:
-    print(f'ℹ️  Filtered {already_processed:,} already-processed ID(s) from current watermark')
-
-results = strictly_new_results
-
-if len(results) == 0:
-    print('\n✅ No strictly newer changes after boundary filtering. Exiting.')
-    notebookutils.notebook.exit("no_changes")
-
 # METADATA ********************
 
 # META {
@@ -550,7 +515,7 @@ print(f'✅ CDC log appended')
 
 # CELL ********************
 
-# Update watermark and track IDs processed at the new watermark
+# Update watermark to the highest change timestamp we processed
 watermark = df_raw.select(F.coalesce(F.col('change_ts'), F.col('sync_timestamp')).alias('ts')) \
     .agg(F.max('ts')).collect()[0][0]
 
@@ -562,24 +527,10 @@ if watermark:
     watermark_str = to_api_utc_millis(watermark_dt) if watermark_dt else str(watermark)
 else:
     watermark_str = to_api_utc_millis(datetime.now(timezone.utc))
-    watermark_dt = datetime.now(timezone.utc)
 
-# Collect documentIds that have the exact same timestamp as the new watermark
-# (needed for collision handling in next run)
-ids_at_watermark = (
-    df_raw
-    .filter(F.coalesce(F.col('change_ts'), F.col('sync_timestamp')) == watermark)
-    .select('documentId')
-    .rdd.flatMap(lambda x: x)
-    .collect()
-)
-ids_at_watermark_str = ','.join(ids_at_watermark) if ids_at_watermark else ''
-
-df_state = spark.createDataFrame([(watermark_str, ids_at_watermark_str)], ['last_watermark', 'processed_ids'])
+df_state = spark.createDataFrame([(watermark_str,)], ['last_watermark'])
 
 print(f'\n🏁 Updating state watermark to: {watermark_str}')
-if ids_at_watermark:
-    print(f'   Tracking {len(ids_at_watermark)} ID(s) at this watermark for collision handling')
 df_state.write \
     .format('delta') \
     .mode('overwrite') \
