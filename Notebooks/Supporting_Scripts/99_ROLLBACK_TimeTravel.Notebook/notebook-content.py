@@ -45,7 +45,7 @@ from datetime import datetime
 # ============================================================================
 
 # Set your rollback cutoff timestamp (everything after this will be erased)
-ROLLBACK_TIMESTAMP = "2026-06-09T00:00:00Z"  # ISO 8601 format
+ROLLBACK_TIMESTAMP = "2026-06-11T00:00:00Z"  # ISO 8601 format
 
 # DRY RUN mode: Set to True to preview, False to execute
 DRY_RUN = False
@@ -82,7 +82,7 @@ affected_count = len(affected_doc_ids)
 
 print(f"✓ Found {affected_count} unique documentIds affected by runs after cutoff")
 
-if affected_count > 0:
+if affected_count > 0 and affected_count <= 10:
     print(f"  DocumentIds: {affected_doc_ids}")
 
 # METADATA ********************
