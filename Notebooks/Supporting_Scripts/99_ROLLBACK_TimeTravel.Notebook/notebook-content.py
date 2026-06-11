@@ -48,7 +48,7 @@ from datetime import datetime
 ROLLBACK_TIMESTAMP = "2026-06-11T00:00:00Z"  # ISO 8601 format
 
 # DRY RUN mode: Set to True to preview, False to execute
-DRY_RUN = True
+DRY_RUN = False
 
 print("="*80)
 print("TIME-TRAVEL ROLLBACK")
@@ -350,8 +350,6 @@ else:
             spark.catalog.dropTempView("temp_valid_ids")
             if spark.catalog._jcatalog.tableExists("temp_orphaned_ids"):
                 spark.catalog.dropTempView("temp_orphaned_ids")
-    else:
-        print("  No array tables to clean up")
     else:
         print("  No array tables to clean up")
     
