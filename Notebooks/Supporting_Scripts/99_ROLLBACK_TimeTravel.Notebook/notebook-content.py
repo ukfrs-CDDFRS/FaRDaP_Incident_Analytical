@@ -152,37 +152,39 @@ if spark.catalog.tableExists("fardap_silver_flatten_state"):
 
 # CELL ********************
 
-# Array tables impact
+# Array tables impact (dynamically discover)
 print("\n--- SILVER ARRAY TABLES ---")
 
-array_tables = [
-    "fardap_silver_actionstaken",
-    "fardap_silver_appliances",
-    "fardap_silver_casualties",
-    "fardap_silver_closeststation",
-    "fardap_silver_falsealarmalertingmethod",
-    "fardap_silver_falsealarmreasons",
-    "fardap_silver_firerescuedetails",
-    "fardap_silver_ignitionsources",
-    "fardap_silver_itemsignited",
-    "fardap_silver_propertytypes",
-    "fardap_silver_ssrsupplied"
-]
+# Discover all Silver array tables dynamically
+all_tables = spark.catalog.listTables()
+core_silver_tables = ["fardap_silver_incidents", "fardap_silver_content_hash", 
+                      "fardap_silver_flatten_state", "fardap_silver_cdc_log"]
+array_tables = [t.name for t in all_tables 
+                if t.name.startswith("fardap_silver_") 
+                and t.name not in core_silver_tables]
+
+if len(array_tables) == 0:
+    print("  No array tables found (they may not have been created yet)")
+else:
+    print(f"  Found {len(array_tables)} array tables:")
+    for table in sorted(array_tables):
+        print(f"    - {table}")
 
 array_total = 0
-if affected_count > 0:
-    for table_name in array_tables:
-        if spark.catalog.tableExists(table_name):
-            count = spark.table(table_name).filter(
-                F.col("documentId").isin(affected_doc_ids)
-            ).count()
-            array_total += count
-            if count > 0:
-                print(f"  {table_name}: {count:,} records to delete")
-        else:
-            print(f"  {table_name}: table doesn't exist (skip)")
+if affected_count > 0 and len(array_tables) > 0:
+    print(f"\n  Impact on array tables:")
+    for table_name in sorted(array_tables):
+        count = spark.table(table_name).filter(
+            F.col("documentId").isin(affected_doc_ids)
+        ).count()
+        array_total += count
+        if count > 0:
+            print(f"    {table_name}: {count:,} records to delete")
 else:
-    print(f"  All array tables: 0 records (no affected documentIds)")
+    if affected_count == 0:
+        print(f"  All array tables: 0 records (no affected documentIds)")
+    elif len(array_tables) == 0:
+        print(f"  No array tables to clean up")
 
 print(f"\n  Total array records: {array_total:,}")
 
@@ -283,22 +285,23 @@ else:
         print(f"✓ Reverted fardap_silver_flatten_state watermark")
     
     # ========================================================================
-    # ARRAY TABLES CLEANUP
+    # ARRAY TABLES CLEANUP (Dynamically discovered)
     # ========================================================================
     print("\n[ARRAY TABLES CLEANUP]")
     
-    if affected_count > 0:
-        for table_name in array_tables:
-            if spark.catalog.tableExists(table_name):
-                spark.sql(f"""
-                    DELETE FROM {table_name}
-                    WHERE documentId IN (
-                        SELECT DISTINCT documentId 
-                        FROM fardap_bronze_cdc_log 
-                        WHERE sync_timestamp > '{ROLLBACK_TIMESTAMP}'
-                    )
-                """)
-                print(f"✓ Deleted from {table_name}")
+    if affected_count > 0 and len(array_tables) > 0:
+        for table_name in sorted(array_tables):
+            spark.sql(f"""
+                DELETE FROM {table_name}
+                WHERE documentId IN (
+                    SELECT DISTINCT documentId 
+                    FROM fardap_bronze_cdc_log 
+                    WHERE sync_timestamp > '{ROLLBACK_TIMESTAMP}'
+                )
+            """)
+            print(f"✓ Deleted from {table_name}")
+    else:
+        print("  No array tables to clean up")
     
     print("\n" + "="*80)
     print("ROLLBACK COMPLETE!")
