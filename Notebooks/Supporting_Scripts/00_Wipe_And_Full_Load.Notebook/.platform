@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "00_Wipe_And_Full_Load",
+    "description": "Wipe all lakehouse tables (Bronze, Silver, Gold) and initiate full load pipeline"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "70aca36a-dc12-4c11-92b2-12ad8766df81"
+  }
+}
