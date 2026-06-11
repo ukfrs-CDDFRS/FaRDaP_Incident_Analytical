@@ -48,7 +48,7 @@ from datetime import datetime
 ROLLBACK_TIMESTAMP = "2026-06-11T00:00:00Z"  # ISO 8601 format
 
 # DRY RUN mode: Set to True to preview, False to execute
-DRY_RUN = False
+DRY_RUN = True
 
 print("="*80)
 print("TIME-TRAVEL ROLLBACK")
@@ -308,48 +308,16 @@ else:
     # ========================================================================
     print("\n[ARRAY TABLES CLEANUP]")
     
-    if len(array_tables) > 0:
-        if affected_count > 0:
-            # Use the temp view we created earlier with known documentIds
-            for table_name in sorted(array_tables):
-                spark.sql(f"""
-                    MERGE INTO {table_name} AS target
-                    USING temp_docs_to_delete AS source
-                    ON target.documentId = source.documentId
-                    WHEN MATCHED THEN DELETE
-                """)
-                print(f"✓ Deleted from {table_name}")
-        else:
-            # Fallback: Find and delete orphaned records 
-            # (documentIds in array but not in main Silver)
-            print("  Finding orphaned array records...")
-            
-            # Get valid documentIds from Silver main
-            df_valid_ids = spark.table("fardap_silver_incidents").select("documentId").distinct()
-            df_valid_ids.createOrReplaceTempView("temp_valid_ids")
-            
-            for table_name in sorted(array_tables):
-                # Use LEFT ANTI JOIN to find orphans
-                df_orphaned = spark.table(table_name).join(
-                    df_valid_ids,
-                    on="documentId",
-                    how="left_anti"
-                ).select("documentId").distinct()
-                
-                orphaned_count = df_orphaned.count()
-                if orphaned_count > 0:
-                    df_orphaned.createOrReplaceTempView("temp_orphaned_ids")
-                    spark.sql(f"""
-                        MERGE INTO {table_name} AS target
-                        USING temp_orphaned_ids AS source
-                        ON target.documentId = source.documentId
-                        WHEN MATCHED THEN DELETE
-                    """)
-                    print(f"✓ Deleted {orphaned_count} orphaned records from {table_name}")
-            
-            spark.catalog.dropTempView("temp_valid_ids")
-            if spark.catalog._jcatalog.tableExists("temp_orphaned_ids"):
-                spark.catalog.dropTempView("temp_orphaned_ids")
+    if affected_count > 0 and len(array_tables) > 0:
+        # Reuse the temp view created earlier
+        for table_name in sorted(array_tables):
+            spark.sql(f"""
+                MERGE INTO {table_name} AS target
+                USING temp_docs_to_delete AS source
+                ON target.documentId = source.documentId
+                WHEN MATCHED THEN DELETE
+            """)
+            print(f"✓ Deleted from {table_name}")
     else:
         print("  No array tables to clean up")
     
