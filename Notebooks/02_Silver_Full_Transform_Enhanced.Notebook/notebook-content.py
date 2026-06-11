@@ -268,12 +268,14 @@ df_bronze = spark.table(TABLE_BRONZE).select("documentId", "raw_json", "sync_tim
 bronze_count = df_bronze.count()
 print(f"[INFO] Loaded {bronze_count:,} records from {TABLE_BRONZE}")
 
-# Sample multiple records to discover ALL arrays (handles schema variance across records)
-sample_jsons = df_bronze.select("raw_json").limit(100).collect()
-print(f"[INFO] Sampling {len(sample_jsons)} records to discover array structures...")
+# Scan ALL records to discover ALL arrays (ensures 100% coverage of rare arrays)
+print(f"[INFO] Scanning ALL {bronze_count:,} records to discover array structures...")
+print(f"[INFO] This may take a few minutes but ensures complete array discovery...")
+sample_jsons = df_bronze.select("raw_json").collect()
 
 # Discover arrays from all samples
-for sample_row in sample_jsons:
+arrays_discovered_count = 0
+for idx, sample_row in enumerate(sample_jsons):
     try:
         sample_content = json.loads(sample_row[0])
         discovered = discover_arrays_in_json(sample_content)
@@ -282,11 +284,16 @@ for sample_row in sample_jsons:
         for array_name, array_config in discovered.items():
             if array_name not in ARRAY_TABLES:
                 ARRAY_TABLES[array_name] = array_config
+                arrays_discovered_count += 1
+                print(f"  [DISCOVERED] {array_name} (record {idx+1}/{len(sample_jsons)})")
             else:
                 # Merge fields (in case different records have different fields)
                 existing_fields = set(ARRAY_TABLES[array_name]['fields'])
                 new_fields = set(array_config['fields'])
-                ARRAY_TABLES[array_name]['fields'] = list(existing_fields | new_fields)
+                merged_fields = list(existing_fields | new_fields)
+                if len(merged_fields) > len(existing_fields):
+                    print(f"  [EXTENDED] {array_name} +{len(merged_fields) - len(existing_fields)} fields (record {idx+1}/{len(sample_jsons)})")
+                ARRAY_TABLES[array_name]['fields'] = merged_fields
     except Exception as e:
         continue
 
