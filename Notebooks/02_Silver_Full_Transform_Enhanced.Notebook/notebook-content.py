@@ -54,7 +54,7 @@ vl = notebookutils.variableLibrary.getLibrary("var_library_fardap")
 
 # Configuration
 LAKEHOUSE_NAME = vl.getVariable("LAKEHOUSE_NAME")
-CDC_DESCRIPTION_MODE = vl.getVariable("CDC_DESCRIPTION_MODE", "Detailed")  # Compact, Detailed, Complete
+CDC_DESCRIPTION_MODE = vl.getVariable("CDC_DESCRIPTION_MODE")  # Compact, Detailed, Complete
 TABLE_BRONZE = "fardap_bronze_incidents"
 TABLE_SILVER_MAIN = "fardap_silver_incidents"
 TABLE_SILVER_FLATTEN_STATE = "fardap_silver_flatten_state"
