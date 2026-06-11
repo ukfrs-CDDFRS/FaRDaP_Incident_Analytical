@@ -13,6 +13,10 @@
     {
       "name": "OS_Boundary_Data_package_ID",
       "value": 6344
+    },
+    {
+      "name": "CDC_DESCRIPTION_MODE",
+      "value": "Complete"
     }
   ]
 }
