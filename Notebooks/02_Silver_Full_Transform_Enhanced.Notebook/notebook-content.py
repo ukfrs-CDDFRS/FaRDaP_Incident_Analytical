@@ -54,6 +54,7 @@ vl = notebookutils.variableLibrary.getLibrary("var_library_fardap")
 
 # Configuration
 LAKEHOUSE_NAME = vl.getVariable("LAKEHOUSE_NAME")
+CDC_DESCRIPTION_MODE = vl.getVariable("CDC_DESCRIPTION_MODE", "Detailed")  # Compact, Detailed, Complete
 TABLE_BRONZE = "fardap_bronze_incidents"
 TABLE_SILVER_MAIN = "fardap_silver_incidents"
 TABLE_SILVER_FLATTEN_STATE = "fardap_silver_flatten_state"
@@ -68,6 +69,7 @@ print(f"  Lakehouse: {LAKEHOUSE_NAME}")
 print(f"  Bronze Input: {TABLE_BRONZE}")
 print(f"  Silver Output: {TABLE_SILVER_MAIN}")
 print(f"  Array discovery: DYNAMIC (no hardcoded list)")
+print(f"  CDC Description Mode: {CDC_DESCRIPTION_MODE}")
 
 # METADATA ********************
 
@@ -497,19 +499,79 @@ print(f"  ✅ This prevents wasted flattening of unchanged JSON")
 # CELL ********************
 
 # ============================================================================
-# STEP 7: Create CDC Log
+# STEP 7: Create CDC Log with Descriptions
 # ============================================================================
 
-df_cdc = df_silver.select(
-    F.col("documentId"),
-    F.lit("insert").alias("op_type"),
-    F.col("flattened_timestamp").alias("flattened_at"),
-    F.current_timestamp().alias("cdc_timestamp")
-)
+print(f"\n[INFO] Generating CDC log (Mode: {CDC_DESCRIPTION_MODE})...")
+
+# For full load, all records are INSERTs
+# Generate descriptions based on record content
+records_sample = df_silver.select("documentId").limit(100).collect()
+print(f"  All {df_silver.count():,} records are INSERTs (full load)")
+
+# For inserts, count non-null fields
+if CDC_DESCRIPTION_MODE == "Compact":
+    # Simple: just say it's a new record
+    df_cdc = df_silver.select(
+        F.col("documentId"),
+        F.lit("insert").alias("op_type"),
+        F.col("flattened_timestamp").alias("flattened_at"),
+        F.current_timestamp().alias("cdc_timestamp"),
+        F.lit("New record created").alias("change_description")
+    )
+
+elif CDC_DESCRIPTION_MODE == "Detailed":
+    # Count non-null fields per record
+    # Create an expression that counts non-null columns
+    content_cols = [col for col in df_silver.columns if col.startswith('content_')]
+    non_null_expr = sum([F.when(F.col(c).isNotNull(), 1).otherwise(0) for c in content_cols])
+    
+    df_cdc = df_silver.select(
+        F.col("documentId"),
+        F.lit("insert").alias("op_type"),
+        F.col("flattened_timestamp").alias("flattened_at"),
+        F.current_timestamp().alias("cdc_timestamp"),
+        F.concat(
+            F.lit("New record with "),
+            non_null_expr.cast(T.StringType()),
+            F.lit(" populated fields")
+        ).alias("change_description")
+    )
+
+elif CDC_DESCRIPTION_MODE == "Complete":
+    # For full load, create JSON showing all populated fields
+    # This is expensive, so we'll create a simplified version
+    content_cols = [col for col in df_silver.columns if col.startswith('content_')]
+    non_null_expr = sum([F.when(F.col(c).isNotNull(), 1).otherwise(0) for c in content_cols])
+    
+    df_cdc = df_silver.select(
+        F.col("documentId"),
+        F.lit("insert").alias("op_type"),
+        F.col("flattened_timestamp").alias("flattened_at"),
+        F.current_timestamp().alias("cdc_timestamp"),
+        F.concat(
+            F.lit('{"operation": "insert", "field_count": '),
+            non_null_expr.cast(T.StringType()),
+            F.lit(', "timestamp": "'),
+            F.date_format(F.current_timestamp(), "yyyy-MM-dd'T'HH:mm:ss'Z'"),
+            F.lit('"}')
+        ).alias("change_description")
+    )
+else:
+    # Fallback
+    df_cdc = df_silver.select(
+        F.col("documentId"),
+        F.lit("insert").alias("op_type"),
+        F.col("flattened_timestamp").alias("flattened_at"),
+        F.current_timestamp().alias("cdc_timestamp"),
+        F.lit("New record").alias("change_description")
+    )
+
 df_cdc.write.format("delta").mode("overwrite").saveAsTable(TABLE_CDC)
 
 print(f"[INFO] Created CDC log: {TABLE_CDC}")
 print(f"[INFO] CDC records: {df_cdc.count():,} (all 'insert' for full load)")
+print(f"[INFO] Change descriptions: {CDC_DESCRIPTION_MODE} mode")
 
 # METADATA ********************
 

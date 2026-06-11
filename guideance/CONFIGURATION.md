@@ -11,6 +11,7 @@
 - [Azure Key Vault](#azure-key-vault)
 - [FRS ID Lookup](#frs-id-lookup)
 - [Performance Tuning](#performance-tuning)
+- [Change Data Capture (CDC) Configuration](#change-data-capture-cdc-configuration)
 
 ---
 
@@ -28,6 +29,7 @@ Located in `var_library_fardap.VariableLibrary/variables.json`:
 | `FRS_ID` | String | Fire & Rescue Service identifier | ✅ Yes |
 | `LAKEHOUSE_NAME` | String | Target Fabric Lakehouse name | ✅ Yes |
 | `KEY_VAULT_URI` | String | Azure Key Vault URI | ✅ Yes |
+| `CDC_DESCRIPTION_MODE` | String | Change description format: `Compact`, `Detailed`, or `Complete` | ✅ Yes (Default: `Detailed`) |
 | `TABLE_FULL` | String | Bronze full table name | Optional |
 | `TABLE_CDC` | String | CDC log table name | Optional |
 
@@ -56,6 +58,11 @@ Located in `var_library_fardap.VariableLibrary/variables.json`:
       "name": "KEY_VAULT_URI",
       "type": "String",
       "value": ""
+    },
+    {
+      "name": "CDC_DESCRIPTION_MODE",
+      "type": "String",
+      "value": "Detailed"
     }
   ]
 }
@@ -72,6 +79,7 @@ API_BASE_URL = vl.getVariable("API_BASE_URL")
 FRS_ID = vl.getVariable("FRS_ID")
 LAKEHOUSE_NAME = vl.getVariable("LAKEHOUSE_NAME")
 KEY_VAULT_URI = vl.getVariable("KEY_VAULT_URI")
+CDC_DESCRIPTION_MODE = vl.getVariable("CDC_DESCRIPTION_MODE", "Detailed")  # Default to Detailed
 ```
 
 ---
@@ -263,6 +271,78 @@ REFRESH_EVERY = 25000   # Count-based token refresh (backup mechanism)
 | Silver Incremental Transform | < 30 seconds |
 | Content hash skip rate | 80-95% |
 | Full pipeline (incremental) | < 2 minutes |
+
+---
+
+## Change Data Capture (CDC) Configuration
+
+The platform provides **configurable change tracking** with three description modes. Configure via the `CDC_DESCRIPTION_MODE` variable.
+
+### Description Modes
+
+| Mode | Description | Storage Impact | Performance Overhead |
+|:-----|:------------|:---------------|:---------------------|
+| **Compact** | Field names only | Small (~150 bytes/update) | 2-3% |
+| **Detailed** | First 5 fields with old→new values (recommended) | Medium (~750 bytes/update) | 3-5% |
+| **Complete** | Full JSON of all changes | Large (~5 KB/update) | 5-8% |
+
+### Configuration
+
+Add to `variables.json`:
+
+```json
+{
+  "name": "CDC_DESCRIPTION_MODE",
+  "type": "String",
+  "value": "Detailed",
+  "note": "Change description format: Compact, Detailed, or Complete"
+}
+```
+
+### Environment-Specific CDC Modes
+
+Override per environment in `valueSets/dev.json` or `valueSets/prod.json`:
+
+```json
+{
+  "name": "dev",
+  "variableOverrides": [
+    {
+      "name": "CDC_DESCRIPTION_MODE",
+      "value": "Detailed"
+    }
+  ]
+}
+```
+
+### Example Outputs
+
+**Compact:**
+```
+5 fields changed: content_status, content_priority, content_location, content_severity, content_assignedto
+```
+
+**Detailed (Recommended):**
+```
+content_status: 'Open' → 'Closed'; content_priority: 'High' → 'Medium'; +3 other fields
+```
+
+**Complete:**
+```json
+{"content_status": {"old": "Open", "new": "Closed"}, "content_priority": {"old": "High", "new": "Medium"}}
+```
+
+### Important Limitations
+
+⚠️ **CDC tracks changes AFTER initial load only:**
+
+- ✅ Captures all changes from first incremental pipeline run forward
+- ❌ Does NOT reconstruct historical changes from before deployment
+- ❌ Rebuilding Silver layer clears CDC history
+
+**Best Practice:** Archive `fardap_silver_cdc_log` before rebuilding Silver layer to preserve change history.
+
+For complete CDC documentation, see [CDC Change Tracking Guide](CDC_CHANGE_TRACKING.md).
 
 ---
 

@@ -54,6 +54,7 @@ vl = notebookutils.variableLibrary.getLibrary("var_library_fardap")
 
 # Configuration
 LAKEHOUSE_NAME = vl.getVariable("LAKEHOUSE_NAME")
+CDC_DESCRIPTION_MODE = vl.getVariable("CDC_DESCRIPTION_MODE", "Detailed")  # Compact, Detailed, Complete
 TABLE_BRONZE = "fardap_bronze_incidents"
 TABLE_BRONZE_CDC = "fardap_bronze_cdc_log"
 TABLE_SILVER_MAIN = "fardap_silver_incidents"
@@ -65,6 +66,7 @@ print(f"[INFO] Enhanced Silver Incremental Transform")
 print(f"  Lakehouse: {LAKEHOUSE_NAME}")
 print(f"  Source: {TABLE_BRONZE_CDC} (Bronze change log)")
 print(f"  Content-hash check: ENABLED (only flatten if JSON changed)")
+print(f"  CDC Description Mode: {CDC_DESCRIPTION_MODE}")
 
 # METADATA ********************
 
@@ -589,22 +591,128 @@ print(f"[INFO] Tracked {truly_changed_count} new content_hash values")
 # CELL ********************
 
 # ============================================================================
-# STEP 8: Append to CDC Log
+# STEP 8: Generate Change Descriptions and Append to CDC Log
 # ============================================================================
 
+print(f"\n[INFO] Generating change descriptions (Mode: {CDC_DESCRIPTION_MODE})...")
+
+# Read existing Silver records for comparison (only for records being updated)
+df_existing = spark.table(TABLE_SILVER_MAIN).filter(
+    F.col("documentId").isin(changed_ids)
+)
+
+# Get Bronze CDC operation types
 df_bronze_cdc_subset = spark.table(TABLE_BRONZE_CDC).filter(
     F.col("documentId").isin(changed_ids)
 ).select("documentId", "op_type").distinct()
 
+# Join new records with op_type
 df_silver_cdc = df_silver_changed.select("documentId").join(
     df_bronze_cdc_subset,
     on="documentId",
     how="inner"
+)
+
+# Determine which records are INSERTS vs UPDATES
+inserts_set = set([row.documentId for row in df_silver_cdc.filter(F.col("op_type") == "insert").select("documentId").collect()])
+updates_set = set([row.documentId for row in df_silver_cdc.filter(F.col("op_type") == "update").select("documentId").collect()])
+
+print(f"  INSERTs: {len(inserts_set)}, UPDATEs: {len(updates_set)}")
+
+# Collect old and new records for comparison
+old_records = {}
+if len(updates_set) > 0:
+    for row in df_existing.filter(F.col("documentId").isin(list(updates_set))).collect():
+        old_records[row.documentId] = row.asDict()
+
+new_records = {}
+for row in df_silver_changed.filter(F.col("documentId").isin(changed_ids)).collect():
+    new_records[row.documentId] = row.asDict()
+
+# Generate change descriptions
+change_descriptions = {}
+
+for doc_id in changed_ids:
+    if doc_id in inserts_set:
+        # For inserts, count non-null fields
+        new_rec = new_records.get(doc_id, {})
+        non_null_fields = sum(1 for v in new_rec.values() if v is not None)
+        change_descriptions[doc_id] = f"New record with {non_null_fields} populated fields"
+    
+    elif doc_id in updates_set:
+        old_rec = old_records.get(doc_id, {})
+        new_rec = new_records.get(doc_id, {})
+        
+        # Find changed fields (focus on content_* fields for performance)
+        changed_fields = []
+        important_fields = [col for col in df_silver_changed.columns 
+                          if col.startswith('content_') or col in ['documentId', 'content_hash']]
+        
+        for field in important_fields:
+            old_val = old_rec.get(field)
+            new_val = new_rec.get(field)
+            
+            # Compare values (handle None/null)
+            if old_val != new_val:
+                # Skip if both are None/null
+                if old_val is None and new_val is None:
+                    continue
+                changed_fields.append((field, old_val, new_val))
+        
+        # Generate description based on mode
+        if CDC_DESCRIPTION_MODE == "Compact":
+            # Option A: List field names only
+            field_names = [f[0] for f in changed_fields]
+            change_descriptions[doc_id] = f"{len(changed_fields)} fields changed: {', '.join(field_names[:10])}"
+            if len(field_names) > 10:
+                change_descriptions[doc_id] += f" +{len(field_names)-10} more"
+        
+        elif CDC_DESCRIPTION_MODE == "Detailed":
+            # Option B: Show old→new for first 5 fields
+            details = []
+            for field, old_val, new_val in changed_fields[:5]:
+                old_str = str(old_val)[:50] if old_val is not None else "null"
+                new_str = str(new_val)[:50] if new_val is not None else "null"
+                details.append(f"{field}: '{old_str}' → '{new_str}'")
+            
+            description = "; ".join(details)
+            if len(changed_fields) > 5:
+                description += f"; +{len(changed_fields)-5} other fields"
+            change_descriptions[doc_id] = description
+        
+        elif CDC_DESCRIPTION_MODE == "Complete":
+            # Option C: Full JSON of all changes
+            changes_dict = {}
+            for field, old_val, new_val in changed_fields:
+                changes_dict[field] = {
+                    "old": str(old_val) if old_val is not None else None,
+                    "new": str(new_val) if new_val is not None else None
+                }
+            change_descriptions[doc_id] = json.dumps(changes_dict)
+        
+        else:
+            # Fallback
+            change_descriptions[doc_id] = f"{len(changed_fields)} fields changed"
+    else:
+        change_descriptions[doc_id] = "Unknown operation"
+
+# Create descriptions DataFrame
+df_descriptions = spark.createDataFrame(
+    [(doc_id, desc) for doc_id, desc in change_descriptions.items()],
+    schema="documentId STRING, change_description STRING"
+)
+
+# Join descriptions to CDC records
+df_silver_cdc = df_silver_cdc.join(
+    df_descriptions,
+    on="documentId",
+    how="left"
 ).withColumn("cdc_timestamp", F.current_timestamp())
 
 df_silver_cdc.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(TABLE_SILVER_CDC)
 
 print(f"[INFO] Appended {truly_changed_count} records to {TABLE_SILVER_CDC}")
+print(f"[INFO] Change descriptions generated: {len(change_descriptions)}")
 
 # METADATA ********************
 

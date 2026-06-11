@@ -42,6 +42,12 @@
       "note": "",
       "type": "Number",
       "value": 6344
+    },
+    {
+      "name": "CDC_DESCRIPTION_MODE",
+      "note": "Change description format for Silver CDC log: Compact (field names only), Detailed (old→new for key fields), Complete (full JSON with all changes)",
+      "type": "String",
+      "value": "Detailed"
     }
   ]
 }

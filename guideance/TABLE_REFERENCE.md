@@ -298,7 +298,7 @@ These tables track processing state and enable incremental updates.
 
 ### fardap_silver_cdc_log
 
-**Description:** Change Data Capture log for Silver layer transformations
+**Description:** Change Data Capture log for Silver layer transformations with detailed change descriptions
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
@@ -306,8 +306,16 @@ These tables track processing state and enable incremental updates.
 | `op_type` | String | Operation type (INSERT/UPDATE) |
 | `flattened_at` | DateTime | When flattening occurred |
 | `cdc_timestamp` | DateTime | CDC record timestamp |
+| `change_description` | String | **Detailed change summary** (format controlled by `CDC_DESCRIPTION_MODE` variable) |
 
-**Purpose:** Audit trail for Silver layer transformations.
+**Purpose:** 
+- Audit trail for Silver layer transformations
+- Tracks which fields changed and their old→new values
+- Configurable detail level: Compact (field names), Detailed (old→new for top fields), or Complete (full JSON)
+
+**Important:** CDC tracks changes from initial deployment forward. Rebuilding Silver layer clears CDC history.
+
+**See:** [CDC Change Tracking Guide](CDC_CHANGE_TRACKING.md) for complete documentation.
 
 ---
 

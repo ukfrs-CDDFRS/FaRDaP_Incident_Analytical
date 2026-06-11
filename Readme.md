@@ -43,7 +43,7 @@ The **FaRDaP Analytical Platform** is a Microsoft Fabric-based enterprise data p
 | ⚡ **Incremental Processing** | Content-hash-based change detection for efficiency |
 | 🔮 **Dynamic Schema Discovery** | Automatically adapts to new fields/arrays |
 | 🔄 **Idempotent Operations** | Safe to re-run without data corruption |
-| 📋 **Change Data Capture** | Full audit trail of all data changes |
+| 📋 **Change Data Capture** | Detailed audit trail with 3 description modes (tracks changes after initial load) |
 | 🔐 **Smart Token Management** | Time-based + count-based refresh prevents auth failures |
 | 🌐 **API Compliance** | User-Agent header with FRS identification per FaRDaP spec |
 | 🌍 **Environment Support** | Development and Production configurations |
@@ -125,7 +125,8 @@ Run the `Find_Your_FRS_ID.Notebook` to discover your organisation's ID.
 | [📖 Technical Documentation](guideance/TECHNICAL_DOCUMENTATION.md) | Complete technical reference |
 | [🔧 Configuration Guide](guideance/CONFIGURATION.md) | Environment setup and variables |
 | [📊 Data Pipeline Guide](guideance/DATA_PIPELINES.md) | Pipeline execution and scheduling |
-| [🗄️ Table Reference](guideance/TABLE_REFERENCE.md) | All Bronze and Silver tables |
+| [� CDC Change Tracking](guideance/CDC_CHANGE_TRACKING.md) | Change data capture and audit trail |
+| [�🗄️ Table Reference](guideance/TABLE_REFERENCE.md) | All Bronze and Silver tables |
 | [🛠️ Supporting Scripts](guideance/SUPPORTING_SCRIPTS.md) | Utility notebooks for exploration |
 
 ---
@@ -176,7 +177,8 @@ All notebooks use `var_library_fardap` for configuration:
     { "name": "API_BASE_URL", "type": "String" },
     { "name": "FRS_ID", "type": "String" },
     { "name": "LAKEHOUSE_NAME", "type": "String" },
-    { "name": "KEY_VAULT_URI", "type": "String" }
+    { "name": "KEY_VAULT_URI", "type": "String" },
+    { "name": "CDC_DESCRIPTION_MODE", "type": "String", "value": "Detailed" }
   ]
 }
 ```
