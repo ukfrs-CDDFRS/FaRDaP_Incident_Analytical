@@ -262,25 +262,30 @@ else:
     print("\n[SILVER CLEANUP]")
     
     if affected_count > 0:
-        # Delete Silver incidents for affected documentIds
-        spark.table("fardap_silver_incidents").filter(
-            F.col("documentId").isin(affected_doc_ids)
-        ).write.format("delta").mode("overwrite").saveAsTable("temp_silver_incidents_to_delete")
+        # Create temp view with affected documentIds
+        df_to_delete = spark.createDataFrame(
+            [(doc_id,) for doc_id in affected_doc_ids],
+            ["documentId"]
+        )
+        df_to_delete.createOrReplaceTempView("temp_docs_to_delete")
         
+        # Delete Silver incidents using MERGE
         spark.sql("""
-            DELETE FROM fardap_silver_incidents
-            WHERE documentId IN (SELECT documentId FROM temp_silver_incidents_to_delete)
+            MERGE INTO fardap_silver_incidents AS target
+            USING temp_docs_to_delete AS source
+            ON target.documentId = source.documentId
+            WHEN MATCHED THEN DELETE
         """)
         print(f"✓ Deleted from fardap_silver_incidents")
         
         # Delete Silver content hash
         spark.sql("""
-            DELETE FROM fardap_silver_content_hash
-            WHERE documentId IN (SELECT documentId FROM temp_silver_incidents_to_delete)
+            MERGE INTO fardap_silver_content_hash AS target
+            USING temp_docs_to_delete AS source
+            ON target.documentId = source.documentId
+            WHEN MATCHED THEN DELETE
         """)
         print(f"✓ Deleted from fardap_silver_content_hash")
-        
-        spark.sql("DROP TABLE IF EXISTS temp_silver_incidents_to_delete")
     
     # Delete Silver CDC log
     if spark.catalog.tableExists("fardap_silver_cdc_log"):
@@ -303,19 +308,55 @@ else:
     # ========================================================================
     print("\n[ARRAY TABLES CLEANUP]")
     
-    if affected_count > 0 and len(array_tables) > 0:
-        for table_name in sorted(array_tables):
-            spark.sql(f"""
-                DELETE FROM {table_name}
-                WHERE documentId IN (
-                    SELECT DISTINCT documentId 
-                    FROM fardap_bronze_cdc_log 
-                    WHERE sync_timestamp > '{ROLLBACK_TIMESTAMP}'
-                )
-            """)
-            print(f"✓ Deleted from {table_name}")
+    if len(array_tables) > 0:
+        if affected_count > 0:
+            # Use the temp view we created earlier with known documentIds
+            for table_name in sorted(array_tables):
+                spark.sql(f"""
+                    MERGE INTO {table_name} AS target
+                    USING temp_docs_to_delete AS source
+                    ON target.documentId = source.documentId
+                    WHEN MATCHED THEN DELETE
+                """)
+                print(f"✓ Deleted from {table_name}")
+        else:
+            # Fallback: Find and delete orphaned records 
+            # (documentIds in array but not in main Silver)
+            print("  Finding orphaned array records...")
+            
+            # Get valid documentIds from Silver main
+            df_valid_ids = spark.table("fardap_silver_incidents").select("documentId").distinct()
+            df_valid_ids.createOrReplaceTempView("temp_valid_ids")
+            
+            for table_name in sorted(array_tables):
+                # Use LEFT ANTI JOIN to find orphans
+                df_orphaned = spark.table(table_name).join(
+                    df_valid_ids,
+                    on="documentId",
+                    how="left_anti"
+                ).select("documentId").distinct()
+                
+                orphaned_count = df_orphaned.count()
+                if orphaned_count > 0:
+                    df_orphaned.createOrReplaceTempView("temp_orphaned_ids")
+                    spark.sql(f"""
+                        MERGE INTO {table_name} AS target
+                        USING temp_orphaned_ids AS source
+                        ON target.documentId = source.documentId
+                        WHEN MATCHED THEN DELETE
+                    """)
+                    print(f"✓ Deleted {orphaned_count} orphaned records from {table_name}")
+            
+            spark.catalog.dropTempView("temp_valid_ids")
+            if spark.catalog._jcatalog.tableExists("temp_orphaned_ids"):
+                spark.catalog.dropTempView("temp_orphaned_ids")
     else:
         print("  No array tables to clean up")
+    else:
+        print("  No array tables to clean up")
+    
+    # Clean up temp view
+    spark.catalog.dropTempView("temp_docs_to_delete")
     
     print("\n" + "="*80)
     print("ROLLBACK COMPLETE!")
