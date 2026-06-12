@@ -352,6 +352,7 @@ from pyspark.sql.types import StructType, StructField, StringType
 
 df_raw = spark.createDataFrame(pd.DataFrame(results))
 df_raw = df_raw.withColumn('sync_timestamp', F.col('sync_timestamp').cast('timestamp'))
+df_raw = df_raw.withColumn('change_ts', F.col('change_ts').cast('timestamp'))
 
 # Add content hash for change detection
 df_raw = df_raw.withColumn('content_hash', F.sha2(F.col('raw_json'), 256))
