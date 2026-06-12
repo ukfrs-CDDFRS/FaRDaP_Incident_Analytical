@@ -453,32 +453,49 @@ df_raw.createOrReplaceTempView('staging_incremental')
 
 # CELL ********************
 
-# Determine op_type from current Bronze membership BEFORE the MERGE.
-# Existing documentId -> 'update'; new documentId -> 'insert'.
-# IMPORTANT: Cache to force evaluation NOW, before the MERGE updates the table
-existing_ids = spark.table(TABLE_FULL).select('documentId').distinct().cache()
+# Determine op_type based on whether content actually changed
+# Read existing records with their content hashes for comparison
+existing_records = spark.table(TABLE_FULL).select('documentId', 'content_hash').cache()
 
-# Diagnostic: Check which IDs are new vs existing
-new_ids = df_raw.join(existing_ids, on='documentId', how='left_anti').select('documentId').collect()
-existing_update_ids = df_raw.join(existing_ids, on='documentId', how='left_semi').select('documentId').collect()
-
-print(f'🔍 Insert/Update Analysis:')
-print(f'   New incidents (insert): {len(new_ids)}')
-if len(new_ids) > 0 and len(new_ids) <= 5:
-    print(f'      IDs: {[row.documentId for row in new_ids]}')
-print(f'   Existing incidents (update): {len(existing_update_ids)}')
-if len(existing_update_ids) > 0 and len(existing_update_ids) <= 5:
-    print(f'      IDs: {[row.documentId for row in existing_update_ids]}')
-
-df_tagged = df_raw.join(existing_ids, on='documentId', how='left_anti') \
+# Find truly new records (not in table at all)
+new_records = df_raw.join(existing_records, on='documentId', how='left_anti') \
     .withColumn('op_type', F.lit('insert')) \
-    .select('documentId', 'op_type', 'change_ts', 'sync_timestamp') \
-    .unionByName(
-        df_raw.join(existing_ids, on='documentId', how='left_semi')
-              .withColumn('op_type', F.lit('update'))
-              .select('documentId', 'op_type', 'change_ts', 'sync_timestamp')
+    .select('documentId', 'op_type', 'change_ts', 'sync_timestamp')
+
+# Find records that exist but have different content_hash (true updates)
+updated_records = df_raw.alias('new') \
+    .join(existing_records.alias('old'), on='documentId', how='inner') \
+    .where(F.col('new.content_hash') != F.col('old.content_hash')) \
+    .select(
+        F.col('new.documentId'),
+        F.lit('update').alias('op_type'),
+        F.col('new.change_ts'),
+        F.col('new.sync_timestamp')
     )
-df_tagged.cache()
+
+# Only track actual changes in CDC
+df_tagged = new_records.unionByName(updated_records)
+
+# Cache only if there are changes
+cdc_count = df_tagged.count()
+unchanged_count = df_raw.count() - cdc_count
+
+if cdc_count > 0:
+    df_tagged.cache()
+    
+    # Diagnostic: Show breakdown of changes
+    op_type_breakdown = df_tagged.groupBy('op_type').count().collect()
+    print(f'🔍 Change Analysis:')
+    for row in op_type_breakdown:
+        print(f'   {row.op_type.capitalize()} incidents: {row["count"]}')
+        # Show sample IDs
+        sample_ids = df_tagged.filter(F.col('op_type') == row.op_type).select('documentId').limit(5).collect()
+        if sample_ids:
+            print(f'      Sample IDs: {[r.documentId for r in sample_ids]}')
+    print(f'   Unchanged incidents (skipped): {unchanged_count}')
+else:
+    print(f'🔍 Change Analysis:')
+    print(f'   No changes detected - all {df_raw.count()} incidents unchanged')
 
 # Merge into Bronze table (MERGE mode for idempotency)
 print(f'\n🔄 Merging into {TABLE_FULL}...')
@@ -495,30 +512,33 @@ WHEN NOT MATCHED THEN
 
 print(f'✅ Merge completed')
 
-# Append to CDC log
-df_cdc = df_tagged
+# Append to CDC log (only if there were actual changes)
+if cdc_count > 0:
+    df_cdc = df_tagged
 
-# Diagnostic: Verify op_type distribution BEFORE writing
-op_type_counts = df_cdc.groupBy('op_type').count().collect()
-print(f'\n📊 CDC DataFrame op_type distribution (BEFORE write):')
-for row in op_type_counts:
-    print(f'   {row.op_type}: {row["count"]}')
+    # Diagnostic: Verify op_type distribution BEFORE writing
+    op_type_counts = df_cdc.groupBy('op_type').count().collect()
+    print(f'\n📊 CDC DataFrame op_type distribution (BEFORE write):')
+    for row in op_type_counts:
+        print(f'   {row.op_type}: {row["count"]}')
 
-print(f'\n📋 Appending {df_cdc.count():,} records to {TABLE_CDC}...')
-df_cdc.write \
-    .format('delta') \
-    .mode('append') \
-    .option('mergeSchema', 'true') \
-    .saveAsTable(TABLE_CDC)
+    print(f'\n📋 Appending {cdc_count:,} records to {TABLE_CDC}...')
+    df_cdc.write \
+        .format('delta') \
+        .mode('append') \
+        .option('mergeSchema', 'true') \
+        .saveAsTable(TABLE_CDC)
 
-print(f'✅ CDC log appended')
+    print(f'✅ CDC log appended')
 
-# Diagnostic: Verify what actually got written
-recent_cdc = spark.table(TABLE_CDC).orderBy(F.col('sync_timestamp').desc()).limit(100)
-written_counts = recent_cdc.groupBy('op_type').count().collect()
-print(f'\n📊 CDC Table op_type distribution (AFTER write, last 100 records):')
-for row in written_counts:
-    print(f'   {row.op_type}: {row["count"]}')
+    # Diagnostic: Verify what actually got written
+    recent_cdc = spark.table(TABLE_CDC).orderBy(F.col('sync_timestamp').desc()).limit(100)
+    written_counts = recent_cdc.groupBy('op_type').count().collect()
+    print(f'\n📊 CDC Table op_type distribution (AFTER write, last 100 records):')
+    for row in written_counts:
+        print(f'   {row.op_type}: {row["count"]}')
+else:
+    print(f'\n✅ No changes detected - CDC log unchanged')
 
 # METADATA ********************
 
@@ -551,6 +571,13 @@ df_state.write \
     .saveAsTable(TABLE_STATE)
 
 print(f'✅ State table updated')
+
+# Signal downstream pipeline to skip if no changes detected
+if cdc_count == 0:
+    print(f'\n🚫 Signaling downstream: no_changes (Silver notebook should skip)')
+    notebookutils.notebook.exit("no_changes")
+
+print(f'\n✅ Incremental sync completed with {cdc_count} changes')
 
 # METADATA ********************
 
