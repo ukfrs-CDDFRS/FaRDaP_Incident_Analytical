@@ -64,7 +64,7 @@ TABLE_SILVER_CDC = "fardap_silver_cdc_log"
 
 print(f"[INFO] Enhanced Silver Incremental Transform")
 print(f"  Lakehouse: {LAKEHOUSE_NAME}")
-print(f"  Source: {TABLE_BRONZE_CDC} (Bronze change log)")
+print(f"  Source: {TABLE_BRONZE} (Bronze main table)")
 print(f"  Content-hash check: ENABLED (only flatten if JSON changed)")
 print(f"  CDC Description Mode: {CDC_DESCRIPTION_MODE}")
 
@@ -107,33 +107,35 @@ if not last_watermark:
     last_watermark = "1970-01-01T00:00:00Z"
     print("[WARN] last_watermark missing; defaulting to epoch")
 
-# Read CDC log for changed records since last watermark (use coalesce of change_ts/sync_timestamp)
-df_bronze_cdc = spark.table(TABLE_BRONZE_CDC).withColumn(
-    "effective_ts",
-    F.coalesce(F.col("change_ts"), F.col("sync_timestamp"))
-).filter(
-    F.col("effective_ts") > F.to_timestamp(F.lit(last_watermark))
-)
+# ARCHITECTURE FIX: Read from Bronze MAIN table, not CDC log
+# Why: Bronze only appends to CDC when content_hash changes. If Bronze re-processes
+# a document (e.g., full reload) without hash change, it updates the main table's
+# sync_timestamp but skips CDC. This causes CDC timestamps to become stale.
+# Solution: Query Bronze main table directly by sync_timestamp to catch ALL re-processed records.
+print(f"[DEBUG] Querying Bronze table where sync_timestamp >= {last_watermark}")
 
-changed_doc_ids = df_bronze_cdc.select("documentId").distinct().collect()
+df_bronze_changed = spark.table(TABLE_BRONZE).filter(
+    F.col("sync_timestamp") >= F.to_timestamp(F.lit(last_watermark))
+).select("documentId", "raw_json", "content_hash", "sync_timestamp")
+
+# Diagnostic: Show timestamp range
+changed_count_before_hash_filter = df_bronze_changed.count()
+if changed_count_before_hash_filter > 0:
+    sync_ts_range = df_bronze_changed.select(
+        F.min("sync_timestamp").alias("min_sync_ts"),
+        F.max("sync_timestamp").alias("max_sync_ts")
+    ).collect()[0]
+    print(f"[DEBUG] Found {changed_count_before_hash_filter} Bronze records with recent sync_timestamp")
+    print(f"[DEBUG]   sync_timestamp range: {sync_ts_range['min_sync_ts']} to {sync_ts_range['max_sync_ts']}")
+
+changed_doc_ids = df_bronze_changed.select("documentId").distinct().collect()
 changed_ids = [row.documentId for row in changed_doc_ids]
 
 if len(changed_ids) == 0:
     print("[INFO] No changes since last watermark - exiting")
     notebookutils.notebook.exit("success: no_changes")
 
-print(f"[INFO] Found {len(changed_ids)} changed records in Bronze CDC")
-
-# Diagnostic: Check op_type distribution from Bronze CDC
-bronze_op_types = df_bronze_cdc.groupBy("op_type").count().collect()
-print(f"\n📊 Bronze CDC op_type distribution:")
-for row in bronze_op_types:
-    print(f"   {row.op_type}: {row['count']}")
-
-# Fetch current Bronze records
-df_bronze_changed = spark.table(TABLE_BRONZE).filter(
-    F.col("documentId").isin(changed_ids)
-).select("documentId", "raw_json", "content_hash", "sync_timestamp")
+print(f"[INFO] Found {len(changed_ids)} changed records in Bronze table")
 
 # Compare with Silver's tracked content_hash to filter out unchanged JSON
 if spark.catalog.tableExists(TABLE_SILVER_CONTENT_HASH):
@@ -607,23 +609,22 @@ df_existing = spark.table(TABLE_SILVER_MAIN).filter(
     F.col("documentId").isin(changed_ids)
 )
 
-# Get Bronze CDC operation types
-df_bronze_cdc_subset = spark.table(TABLE_BRONZE_CDC).filter(
-    F.col("documentId").isin(changed_ids)
-).select("documentId", "op_type").distinct()
+# Determine op_type by checking if record already exists in Silver
+existing_doc_ids_in_silver = set([row.documentId for row in df_existing.select("documentId").collect()])
 
-# Join new records with op_type
-df_silver_cdc = df_silver_changed.select("documentId").join(
-    df_bronze_cdc_subset,
-    on="documentId",
-    how="inner"
-)
-
-# Determine which records are INSERTS vs UPDATES
-inserts_set = set([row.documentId for row in df_silver_cdc.filter(F.col("op_type") == "insert").select("documentId").collect()])
-updates_set = set([row.documentId for row in df_silver_cdc.filter(F.col("op_type") == "update").select("documentId").collect()])
+inserts_set = set([doc_id for doc_id in changed_ids if doc_id not in existing_doc_ids_in_silver])
+updates_set = set([doc_id for doc_id in changed_ids if doc_id in existing_doc_ids_in_silver])
 
 print(f"  INSERTs: {len(inserts_set)}, UPDATEs: {len(updates_set)}")
+
+# Create df_silver_cdc with op_type for CDC logging
+cdc_records = []
+for doc_id in inserts_set:
+    cdc_records.append({"documentId": doc_id, "op_type": "insert"})
+for doc_id in updates_set:
+    cdc_records.append({"documentId": doc_id, "op_type": "update"})
+
+df_silver_cdc = spark.createDataFrame(cdc_records, schema="documentId STRING, op_type STRING")
 
 # Collect old and new records for comparison
 old_records = {}
@@ -740,14 +741,14 @@ for row in written_op_types:
 # STEP 9: Update Flatten State
 # ============================================================================
 
-watermark = df_bronze_cdc.select(
-    F.coalesce(F.col("change_ts"), F.col("sync_timestamp")).alias("ts")
-).agg(F.max("ts")).collect()[0][0]
-
-if watermark:
-    new_watermark = watermark.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(watermark, "strftime") else str(watermark)
-else:
-    new_watermark = datetime.now().isoformat()
+# Use current processing time as watermark (NOT record timestamps)
+# This handles late-arriving data correctly:
+# - Full reloads may bring old timestamps
+# - We care about "have we processed this CDC batch" not "what were the record timestamps"
+# - Next run will process any NEW CDC entries added after this timestamp
+from datetime import timezone
+processing_time = datetime.now(timezone.utc)
+new_watermark = processing_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"  # Millisecond precision to match Bronze
 
 df_new_state = spark.createDataFrame(
     [(int(spark.table(TABLE_SILVER_MAIN).count()), new_watermark, "incremental")],
