@@ -401,6 +401,39 @@ print(f"[INFO] Flattened {truly_changed_count} changed records")
 # CELL ********************
 
 # ============================================================================
+# STEP 4B: Capture "Before" State for CDC (BEFORE merge)
+# ============================================================================
+
+# Read existing Silver records BEFORE merge to capture old state
+df_before_merge = spark.table(TABLE_SILVER_MAIN).filter(
+    F.col("documentId").isin(changed_ids)
+)
+
+# Determine which records already exist (updates) vs new (inserts)
+existing_doc_ids_before_merge = set([row.documentId for row in df_before_merge.select("documentId").collect()])
+inserts_set = set([doc_id for doc_id in changed_ids if doc_id not in existing_doc_ids_before_merge])
+updates_set = set([doc_id for doc_id in changed_ids if doc_id in existing_doc_ids_before_merge])
+
+print(f"\n[CDC PREP] Captured before-state for change tracking:")
+print(f"  INSERTs: {len(inserts_set)}")
+print(f"  UPDATEs: {len(updates_set)}")
+
+# Collect old records for UPDATEs (will use in STEP 8)
+old_records_for_cdc = {}
+if len(updates_set) > 0:
+    for row in df_before_merge.filter(F.col("documentId").isin(list(updates_set))).collect():
+        old_records_for_cdc[row.documentId] = row.asDict()
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# CELL ********************
+
+# ============================================================================
 # STEP 5: MERGE into Silver Main Table (align columns to target schema)
 # ============================================================================
 
@@ -603,19 +636,7 @@ print(f"[INFO] Tracked {truly_changed_count} new content_hash values")
 # ============================================================================
 
 print(f"\n[INFO] Generating change descriptions (Mode: {CDC_DESCRIPTION_MODE})...")
-
-# Read existing Silver records for comparison (only for records being updated)
-df_existing = spark.table(TABLE_SILVER_MAIN).filter(
-    F.col("documentId").isin(changed_ids)
-)
-
-# Determine op_type by checking if record already exists in Silver
-existing_doc_ids_in_silver = set([row.documentId for row in df_existing.select("documentId").collect()])
-
-inserts_set = set([doc_id for doc_id in changed_ids if doc_id not in existing_doc_ids_in_silver])
-updates_set = set([doc_id for doc_id in changed_ids if doc_id in existing_doc_ids_in_silver])
-
-print(f"  INSERTs: {len(inserts_set)}, UPDATEs: {len(updates_set)}")
+print(f"  Using before-state captured in STEP 4B (INSERTs: {len(inserts_set)}, UPDATEs: {len(updates_set)})")
 
 # Create df_silver_cdc with op_type for CDC logging
 cdc_records = []
@@ -626,12 +647,10 @@ for doc_id in updates_set:
 
 df_silver_cdc = spark.createDataFrame(cdc_records, schema="documentId STRING, op_type STRING")
 
-# Collect old and new records for comparison
-old_records = {}
-if len(updates_set) > 0:
-    for row in df_existing.filter(F.col("documentId").isin(list(updates_set))).collect():
-        old_records[row.documentId] = row.asDict()
+# Use the old records captured BEFORE the merge (from STEP 4B)
+old_records = old_records_for_cdc
 
+# Collect new records from staging data (what we just merged)
 new_records = {}
 for row in df_silver_changed.filter(F.col("documentId").isin(changed_ids)).collect():
     new_records[row.documentId] = row.asDict()
@@ -649,6 +668,12 @@ for doc_id in changed_ids:
     elif doc_id in updates_set:
         old_rec = old_records.get(doc_id, {})
         new_rec = new_records.get(doc_id, {})
+        
+        # Diagnostic: Verify we have both old and new records
+        if not old_rec:
+            print(f"  [WARN] {doc_id}: No old record found (should have been captured in STEP 4B)")
+        if not new_rec:
+            print(f"  [WARN] {doc_id}: No new record found (should be in staging data)")
         
         # Find changed fields (focus on content_* fields for performance)
         changed_fields = []
@@ -716,10 +741,25 @@ df_silver_cdc = df_silver_cdc.join(
     how="left"
 ).withColumn("cdc_timestamp", F.current_timestamp())
 
+# Schema alignment: Ensure columns match existing table
+if spark.catalog.tableExists(TABLE_SILVER_CDC):
+    existing_cdc_schema = spark.table(TABLE_SILVER_CDC).schema
+    # Cast all columns to match existing schema
+    for field in existing_cdc_schema.fields:
+        if field.name in df_silver_cdc.columns:
+            df_silver_cdc = df_silver_cdc.withColumn(field.name, F.col(field.name).cast(field.dataType))
+
 df_silver_cdc.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(TABLE_SILVER_CDC)
 
 print(f"[INFO] Appended {truly_changed_count} records to {TABLE_SILVER_CDC}")
 print(f"[INFO] Change descriptions generated: {len(change_descriptions)}")
+
+# Diagnostic: Show sample change description
+if len(change_descriptions) > 0 and CDC_DESCRIPTION_MODE == "Complete":
+    sample_doc_id = list(change_descriptions.keys())[0]
+    sample_desc = change_descriptions[sample_doc_id]
+    print(f"\\n[SAMPLE CDC] DocumentId: {sample_doc_id}")
+    print(f"  Description preview: {sample_desc[:200]}..." if len(sample_desc) > 200 else f"  Description: {sample_desc}")
 
 # Diagnostic: Verify what was written
 recent_silver_cdc = spark.table(TABLE_SILVER_CDC).orderBy(F.col("cdc_timestamp").desc()).limit(100)
