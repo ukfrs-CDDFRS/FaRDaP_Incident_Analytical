@@ -114,6 +114,15 @@ if not last_watermark:
 # Solution: Query Bronze main table directly by sync_timestamp to catch ALL re-processed records.
 print(f"[DEBUG] Querying Bronze table where sync_timestamp >= {last_watermark}")
 
+# DIAGNOSTIC: Show what Bronze actually has (top 5 most recent records)
+bronze_latest = spark.table(TABLE_BRONZE).orderBy(F.col("sync_timestamp").desc()).limit(5)
+bronze_latest_ts = bronze_latest.select("documentId", "sync_timestamp").collect()
+print(f"\n[DIAGNOSTIC] Latest 5 Bronze records:")
+for row in bronze_latest_ts:
+    print(f"  {row.documentId}: sync_timestamp = {row.sync_timestamp}")
+print(f"[DIAGNOSTIC] Silver watermark: {last_watermark}")
+print(f"[DIAGNOSTIC] Looking for Bronze records WHERE sync_timestamp >= {last_watermark}\n")
+
 df_bronze_changed = spark.table(TABLE_BRONZE).filter(
     F.col("sync_timestamp") >= F.to_timestamp(F.lit(last_watermark))
 ).select("documentId", "raw_json", "content_hash", "sync_timestamp")
@@ -132,7 +141,13 @@ changed_doc_ids = df_bronze_changed.select("documentId").distinct().collect()
 changed_ids = [row.documentId for row in changed_doc_ids]
 
 if len(changed_ids) == 0:
-    print("[INFO] No changes since last watermark - exiting")
+    print("\n[INFO] ❌ No changes found in Bronze table since last watermark")
+    print(f"[INFO] This means Bronze has NO records with sync_timestamp >= {last_watermark}")
+    print(f"[INFO] Possible reasons:")
+    print(f"  1. Bronze hasn't run yet to process new changes")
+    print(f"  2. Bronze processed records but kept OLD timestamps (check Bronze watermark logic)")
+    print(f"  3. All recent Bronze records were filtered out by content_hash check")
+    print(f"\n[ACTION] Check the diagnostic output above to see Bronze's latest timestamps")
     notebookutils.notebook.exit("success: no_changes")
 
 print(f"[INFO] Found {len(changed_ids)} changed records in Bronze table")
@@ -401,10 +416,18 @@ print(f"[INFO] Flattened {truly_changed_count} changed records")
 # CELL ********************
 
 # ============================================================================
-# STEP 4B: Capture "Before" State for CDC (BEFORE merge)
+# STEP 4B: Capture "Before" and "After" State for CDC
 # ============================================================================
 
-# Read existing Silver records BEFORE merge to capture old state
+print(f"\n[CDC PREP] Capturing before/after state for change tracking...")
+
+# CAPTURE "AFTER" STATE: Collect new records NOW (before any transformations)
+new_records_for_cdc = {}
+for row in df_silver_changed.filter(F.col("documentId").isin(changed_ids)).collect():
+    new_records_for_cdc[row.documentId] = row.asDict()
+print(f"  Captured {len(new_records_for_cdc)} NEW records (after flattening)")
+
+# CAPTURE "BEFORE" STATE: Read existing Silver records to capture old state
 df_before_merge = spark.table(TABLE_SILVER_MAIN).filter(
     F.col("documentId").isin(changed_ids)
 )
@@ -414,15 +437,17 @@ existing_doc_ids_before_merge = set([row.documentId for row in df_before_merge.s
 inserts_set = set([doc_id for doc_id in changed_ids if doc_id not in existing_doc_ids_before_merge])
 updates_set = set([doc_id for doc_id in changed_ids if doc_id in existing_doc_ids_before_merge])
 
-print(f"\n[CDC PREP] Captured before-state for change tracking:")
-print(f"  INSERTs: {len(inserts_set)}")
-print(f"  UPDATEs: {len(updates_set)}")
+print(f"  INSERTs (new documentIds): {len(inserts_set)}")
+print(f"  UPDATEs (existing documentIds): {len(updates_set)}")
 
-# Collect old records for UPDATEs (will use in STEP 8)
+# Collect old records for UPDATEs
 old_records_for_cdc = {}
 if len(updates_set) > 0:
     for row in df_before_merge.filter(F.col("documentId").isin(list(updates_set))).collect():
         old_records_for_cdc[row.documentId] = row.asDict()
+    print(f"  Captured {len(old_records_for_cdc)} OLD records (before merge)")
+else:
+    print(f"  No OLD records to capture (all are inserts)")
 
 # METADATA ********************
 
@@ -647,13 +672,32 @@ for doc_id in updates_set:
 
 df_silver_cdc = spark.createDataFrame(cdc_records, schema="documentId STRING, op_type STRING")
 
-# Use the old records captured BEFORE the merge (from STEP 4B)
-old_records = old_records_for_cdc
+# Use the records captured in STEP 4B (BEFORE any transformations)
+old_records = old_records_for_cdc  # Captured from Silver table before merge
+new_records = new_records_for_cdc  # Captured from df_silver_changed before column transformations
 
-# Collect new records from staging data (what we just merged)
-new_records = {}
-for row in df_silver_changed.filter(F.col("documentId").isin(changed_ids)).collect():
-    new_records[row.documentId] = row.asDict()
+# Diagnostic: Verify we have the data we need
+print(f"  OLD records available: {len(old_records)}")
+print(f"  NEW records available: {len(new_records)}")
+if len(new_records) == 0:
+    print(f"  [ERROR] No NEW records found! This should never happen.")
+    print(f"  [ERROR] Check STEP 4B - new_records_for_cdc should be populated")
+else:
+    # Show sample of what we captured
+    sample_doc_id = list(new_records.keys())[0]
+    sample_new = new_records[sample_doc_id]
+    print(f"\n  [SAMPLE NEW RECORD] {sample_doc_id}:")
+    sample_fields = [k for k in sample_new.keys() if k.startswith('content_')][:3]
+    for field in sample_fields:
+        value = sample_new.get(field)
+        print(f"    {field}: {value[:50] if value and len(str(value)) > 50 else value}")
+    
+    if sample_doc_id in old_records:
+        sample_old = old_records[sample_doc_id]
+        print(f"  [SAMPLE OLD RECORD] {sample_doc_id}:")
+        for field in sample_fields:
+            value = sample_old.get(field)
+            print(f"    {field}: {value[:50] if value and len(str(value)) > 50 else value}")
 
 # Generate change descriptions
 change_descriptions = {}
@@ -673,12 +717,17 @@ for doc_id in changed_ids:
         if not old_rec:
             print(f"  [WARN] {doc_id}: No old record found (should have been captured in STEP 4B)")
         if not new_rec:
-            print(f"  [WARN] {doc_id}: No new record found (should be in staging data)")
+            print(f"  [WARN] {doc_id}: No new record found (should have been captured in STEP 4B)")
         
-        # Find changed fields (focus on content_* fields for performance)
+        # Find changed fields (use all columns from new record)
         changed_fields = []
-        important_fields = [col for col in df_silver_changed.columns 
-                          if col.startswith('content_') or col in ['documentId', 'content_hash']]
+        # Focus on content_* fields for performance, or use all fields if needed
+        if new_rec:
+            important_fields = [col for col in new_rec.keys() 
+                              if col.startswith('content_') or col in ['documentId', 'content_hash']]
+        else:
+            print(f"  [ERROR] {doc_id}: new_rec is empty!")
+            important_fields = []
         
         for field in important_fields:
             old_val = old_rec.get(field)
@@ -781,14 +830,29 @@ for row in written_op_types:
 # STEP 9: Update Flatten State
 # ============================================================================
 
-# Use current processing time as watermark (NOT record timestamps)
-# This handles late-arriving data correctly:
-# - Full reloads may bring old timestamps
-# - We care about "have we processed this CDC batch" not "what were the record timestamps"
-# - Next run will process any NEW CDC entries added after this timestamp
-from datetime import timezone
-processing_time = datetime.now(timezone.utc)
-new_watermark = processing_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"  # Millisecond precision to match Bronze
+# CRITICAL FIX: Use MAX timestamp from Bronze records we ACTUALLY PROCESSED
+# Why: Bronze may write records with old timestamps (e.g., during reprocessing).
+# If we use "now" as watermark, we'll skip those old-timestamped records on next run.
+# Solution: Use the MAX sync_timestamp from the records we flattened.
+
+if truly_changed_count > 0:
+    # Get the maximum sync_timestamp from records we processed
+    max_processed_timestamp = df_to_flatten.agg(F.max("sync_timestamp")).collect()[0][0]
+    
+    if max_processed_timestamp:
+        # Use the max timestamp we processed as watermark
+        new_watermark = max_processed_timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        print(f"[INFO] Using MAX sync_timestamp from processed records: {new_watermark}")
+    else:
+        # Fallback: use current time if timestamp is missing
+        from datetime import timezone
+        processing_time = datetime.now(timezone.utc)
+        new_watermark = processing_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        print(f"[WARN] No sync_timestamp found, using current time: {new_watermark}")
+else:
+    # No records processed, keep existing watermark
+    new_watermark = last_watermark
+    print(f"[INFO] No records processed, keeping existing watermark: {new_watermark}")
 
 df_new_state = spark.createDataFrame(
     [(int(spark.table(TABLE_SILVER_MAIN).count()), new_watermark, "incremental")],
