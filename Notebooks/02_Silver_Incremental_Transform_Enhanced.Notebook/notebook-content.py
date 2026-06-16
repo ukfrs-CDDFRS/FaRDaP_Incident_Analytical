@@ -493,6 +493,7 @@ print(f"[INFO] Updated/inserted {truly_changed_count} records")
 
 # ============================================================================
 # STEP 6: Extract and Update Arrays for Changed Records
+# CAPTURES full "before" and "after" array data for CDC tracking
 # ============================================================================
 
 extracted_arrays = {}
@@ -509,11 +510,47 @@ for row in bronze_changed_data:
             extracted_arrays[table_name] = []
         extracted_arrays[table_name].extend(array_data)
 
+# TRACK ARRAY CHANGES FOR CDC: Capture "before" state
+print(f"[INFO] Capturing array state before update (for CDC tracking)...")
+array_changes_by_doc = {}  # {documentId: {table_name: {"old_count": X, "new_count": Y}}}
+
+for doc_id in changed_ids:
+    array_changes_by_doc[doc_id] = {}
+
 print(f"[INFO] Updating array tables:")
 
 for array_type, table_config in ARRAY_TABLES.items():
     table_name = table_config["table_name"]
     records = extracted_arrays.get(table_name, [])
+    
+    # CAPTURE "BEFORE" STATE: Track existing array records (full data + counts) for CDC
+    if spark.catalog.tableExists(table_name):
+        df_old_arrays = spark.table(table_name).filter(F.col("documentId").isin(changed_ids))
+        
+        # Capture counts
+        old_counts_by_doc = df_old_arrays.groupBy("documentId").count().collect()
+        old_counts_dict = {row.documentId: row["count"] for row in old_counts_by_doc}
+        
+        # Capture full records for Complete mode
+        old_records_by_doc = {}
+        for row in df_old_arrays.collect():
+            doc_id = row.documentId
+            if doc_id not in old_records_by_doc:
+                old_records_by_doc[doc_id] = []
+            old_records_by_doc[doc_id].append(row.asDict())
+    else:
+        old_counts_dict = {}
+        old_records_by_doc = {}
+    
+    # Track arrays for ALL changed documentIds (even if 0 records)
+    for doc_id in changed_ids:
+        if table_name not in array_changes_by_doc.get(doc_id, {}):
+            array_changes_by_doc[doc_id][table_name] = {
+                "old_count": old_counts_dict.get(doc_id, 0),
+                "new_count": 0,  # Will be updated after insert
+                "old_records": old_records_by_doc.get(doc_id, []),
+                "new_records": []  # Will be updated after insert
+            }
     
     if records:
         # DELETE old arrays for these documentIds (only if table exists)
@@ -611,9 +648,47 @@ for array_type, table_config in ARRAY_TABLES.items():
 
             df_rebuild.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
         
+        # CAPTURE "AFTER" STATE: Update new counts + full records for CDC tracking
+        new_counts_by_doc = df_array.groupBy("documentId").count().collect()
+        new_counts_dict = {row.documentId: row["count"] for row in new_counts_by_doc}
+        
+        # Capture full new records for Complete mode
+        new_records_by_doc = {}
+        for row in df_array.collect():
+            doc_id = row.documentId
+            if doc_id not in new_records_by_doc:
+                new_records_by_doc[doc_id] = []
+            new_records_by_doc[doc_id].append(row.asDict())
+        
+        # Update tracking dictionary
+        for doc_id in changed_ids:
+            if table_name in array_changes_by_doc.get(doc_id, {}):
+                array_changes_by_doc[doc_id][table_name]["new_count"] = new_counts_dict.get(doc_id, 0)
+                array_changes_by_doc[doc_id][table_name]["new_records"] = new_records_by_doc.get(doc_id, [])
+        
         print(f"  ✓ {table_name}: {len(records)} rows, {len(df_array.columns)} columns [{write_mode}]")
 
 print(f"[INFO] Array tables updated")
+
+# DIAGNOSTIC: Show array changes summary
+print(f"\n[ARRAY CDC TRACKING] Summary of array changes (full records captured):")
+total_array_changes = 0
+for doc_id in changed_ids:
+    doc_array_changes = []
+    for table_name, data in array_changes_by_doc.get(doc_id, {}).items():
+        old_count = data.get("old_count", 0)
+        new_count = data.get("new_count", 0)
+        if old_count != new_count:
+            array_type = table_name.replace("fardap_silver_", "")
+            doc_array_changes.append(f"{array_type}: {old_count}→{new_count}")
+            total_array_changes += 1
+    if doc_array_changes and len(doc_array_changes) <= 3:  # Show first 3 examples
+        print(f"  {doc_id}: {', '.join(doc_array_changes)}")
+if total_array_changes == 0:
+    print(f"  No array changes detected")
+else:
+    print(f"  Total array tables with changes: {total_array_changes}")
+print(f"  (Complete records stored for CDC mode: {CDC_DESCRIPTION_MODE})")
 
 # METADATA ********************
 
@@ -707,7 +782,20 @@ for doc_id in changed_ids:
         # For inserts, count non-null fields
         new_rec = new_records.get(doc_id, {})
         non_null_fields = sum(1 for v in new_rec.values() if v is not None)
-        change_descriptions[doc_id] = f"New record with {non_null_fields} populated fields"
+        
+        # Add array information for inserts
+        array_info = []
+        for table_name, counts in array_changes_by_doc.get(doc_id, {}).items():
+            new_count = counts.get("new_count", 0)
+            if new_count > 0:
+                # Extract array type from table name (e.g., fardap_silver_casualties -> casualties)
+                array_type = table_name.replace("fardap_silver_", "").replace("_", " ")
+                array_info.append(f"{new_count} {array_type}")
+        
+        base_description = f"New record with {non_null_fields} populated fields"
+        if array_info:
+            base_description += f" | Arrays: {', '.join(array_info)}"
+        change_descriptions[doc_id] = base_description
     
     elif doc_id in updates_set:
         old_rec = old_records.get(doc_id, {})
@@ -740,13 +828,29 @@ for doc_id in changed_ids:
                     continue
                 changed_fields.append((field, old_val, new_val))
         
+        # Detect array changes for this documentId
+        array_changes = []
+        for table_name, counts in array_changes_by_doc.get(doc_id, {}).items():
+            old_count = counts.get("old_count", 0)
+            new_count = counts.get("new_count", 0)
+            if old_count != new_count:
+                array_type = table_name.replace("fardap_silver_", "").replace("_", " ")
+                array_changes.append((array_type, old_count, new_count))
+        
         # Generate description based on mode
         if CDC_DESCRIPTION_MODE == "Compact":
             # Option A: List field names only
             field_names = [f[0] for f in changed_fields]
-            change_descriptions[doc_id] = f"{len(changed_fields)} fields changed: {', '.join(field_names[:10])}"
+            description = f"{len(changed_fields)} fields changed: {', '.join(field_names[:10])}"
             if len(field_names) > 10:
-                change_descriptions[doc_id] += f" +{len(field_names)-10} more"
+                description += f" +{len(field_names)-10} more"
+            
+            # Add array changes
+            if array_changes:
+                array_summary = [f"{atype}: {old}→{new}" for atype, old, new in array_changes]
+                description += f" | Arrays: {', '.join(array_summary)}"
+            
+            change_descriptions[doc_id] = description
         
         elif CDC_DESCRIPTION_MODE == "Detailed":
             # Option B: Show old→new for first 5 fields
@@ -759,6 +863,12 @@ for doc_id in changed_ids:
             description = "; ".join(details)
             if len(changed_fields) > 5:
                 description += f"; +{len(changed_fields)-5} other fields"
+            
+            # Add array changes
+            if array_changes:
+                array_details = [f"{atype}: {old} items → {new} items" for atype, old, new in array_changes]
+                description += f" | Arrays: {', '.join(array_details)}"
+            
             change_descriptions[doc_id] = description
         
         elif CDC_DESCRIPTION_MODE == "Complete":
@@ -769,11 +879,29 @@ for doc_id in changed_ids:
                     "old": str(old_val) if old_val is not None else None,
                     "new": str(new_val) if new_val is not None else None
                 }
+            
+            # Add array changes to JSON with FULL records (not just counts)
+            if array_changes:
+                changes_dict["_arrays"] = {}
+                for atype, old_count, new_count in array_changes:
+                    # Find the actual table data
+                    table_name = f"fardap_silver_{atype.replace(' ', '_')}"
+                    array_data = array_changes_by_doc.get(doc_id, {}).get(table_name, {})
+                    
+                    changes_dict["_arrays"][atype] = {
+                        "old": array_data.get("old_records", []),
+                        "new": array_data.get("new_records", [])
+                    }
+            
             change_descriptions[doc_id] = json.dumps(changes_dict)
         
         else:
             # Fallback
-            change_descriptions[doc_id] = f"{len(changed_fields)} fields changed"
+            description = f"{len(changed_fields)} fields changed"
+            if array_changes:
+                array_summary = [f"{atype}: {old}→{new}" for atype, old, new in array_changes]
+                description += f" | Arrays: {', '.join(array_summary)}"
+            change_descriptions[doc_id] = description
     else:
         change_descriptions[doc_id] = "Unknown operation"
 
