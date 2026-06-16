@@ -673,21 +673,38 @@ print(f"[INFO] Array tables updated")
 # DIAGNOSTIC: Show array changes summary
 print(f"\n[ARRAY CDC TRACKING] Summary of array changes (full records captured):")
 total_array_changes = 0
+total_content_only_changes = 0
 for doc_id in changed_ids:
     doc_array_changes = []
     for table_name, data in array_changes_by_doc.get(doc_id, {}).items():
         old_count = data.get("old_count", 0)
         new_count = data.get("new_count", 0)
+        old_records = data.get("old_records", [])
+        new_records = data.get("new_records", [])
+        
+        # Check if count changed
         if old_count != new_count:
             array_type = table_name.replace("fardap_silver_", "")
-            doc_array_changes.append(f"{array_type}: {old_count}→{new_count}")
+            doc_array_changes.append(f"{array_type}: {old_count}→{new_count} items")
             total_array_changes += 1
+        # Check if content changed (same count)
+        elif old_count > 0:
+            old_json = json.dumps(old_records, sort_keys=True)
+            new_json = json.dumps(new_records, sort_keys=True)
+            if old_json != new_json:
+                array_type = table_name.replace("fardap_silver_", "")
+                doc_array_changes.append(f"{array_type}: {old_count} items (content changed)")
+                total_array_changes += 1
+                total_content_only_changes += 1
+    
     if doc_array_changes and len(doc_array_changes) <= 3:  # Show first 3 examples
         print(f"  {doc_id}: {', '.join(doc_array_changes)}")
 if total_array_changes == 0:
     print(f"  No array changes detected")
 else:
     print(f"  Total array tables with changes: {total_array_changes}")
+    if total_content_only_changes > 0:
+        print(f"  ↳ Content-only changes (same count, different data): {total_content_only_changes}")
 print(f"  (Complete records stored for CDC mode: {CDC_DESCRIPTION_MODE})")
 
 # METADATA ********************
@@ -833,7 +850,21 @@ for doc_id in changed_ids:
         for table_name, counts in array_changes_by_doc.get(doc_id, {}).items():
             old_count = counts.get("old_count", 0)
             new_count = counts.get("new_count", 0)
+            old_records = counts.get("old_records", [])
+            new_records = counts.get("new_records", [])
+            
+            # Check if array changed: either count changed OR content changed (same count, different records)
+            array_changed = False
             if old_count != new_count:
+                array_changed = True
+            elif old_count > 0:  # Same count, but check if content changed
+                # Compare records (convert to JSON strings for comparison since records are dicts)
+                old_json = json.dumps(old_records, sort_keys=True)
+                new_json = json.dumps(new_records, sort_keys=True)
+                if old_json != new_json:
+                    array_changed = True
+            
+            if array_changed:
                 array_type = table_name.replace("fardap_silver_", "").replace("_", " ")
                 array_changes.append((array_type, old_count, new_count))
         
