@@ -857,8 +857,8 @@ for doc_id in changed_ids:
         for table_name, counts in array_changes_by_doc.get(doc_id, {}).items():
             old_count = counts.get("old_count", 0)
             new_count = counts.get("new_count", 0)
-            old_records = counts.get("old_records", [])
-            new_records = counts.get("new_records", [])
+            old_array_records = counts.get("old_records", [])
+            new_array_records = counts.get("new_records", [])
             
             # Check if array changed: either count changed OR content changed (same count, different records)
             array_changed = False
@@ -866,8 +866,8 @@ for doc_id in changed_ids:
                 array_changed = True
             elif old_count > 0:  # Same count, but check if content changed
                 # Compare records (convert to JSON strings for comparison since records are dicts)
-                old_json = json.dumps(old_records, sort_keys=True)
-                new_json = json.dumps(new_records, sort_keys=True)
+                old_json = json.dumps(old_array_records, sort_keys=True)
+                new_json = json.dumps(new_array_records, sort_keys=True)
                 if old_json != new_json:
                     array_changed = True
             
