@@ -622,7 +622,14 @@ for array_type, table_config in ARRAY_TABLES.items():
             # Avoid blind schema merge. Auto-heal only on known Delta field conflict.
             df_array.write.format("delta").mode("append").option("mergeSchema", "false").saveAsTable(table_name)
         except Exception as e:
-            if "DELTA_FAILED_TO_MERGE_FIELDS" not in str(e):
+            error_str = str(e)
+            # Check for schema mismatch errors (multiple error codes possible)
+            is_schema_mismatch = (
+                "DELTA_FAILED_TO_MERGE_FIELDS" in error_str or
+                "_LEGACY_ERROR_TEMP_DELTA_0007" in error_str or
+                "schema mismatch detected" in error_str.lower()
+            )
+            if not is_schema_mismatch:
                 raise
 
             write_mode = "auto-heal-rebuild"
