@@ -22,6 +22,79 @@
 
 The Bronze layer stores raw JSON documents exactly as received from the FaRDaP API.
 
+### Dual-Search Architecture
+
+Both notebooks (`01_Bronze_Full_Load` and `01_Bronze_Incremental_Sync`) implement dual-search to capture complete incident coverage:
+
+#### Search Strategy
+
+```python
+# Search 1: Territory incidents
+territory_ids = search_by_criteria('territoryFrsId', FRS_ID)
+
+# Search 2: Responsible incidents  
+responsible_ids = search_by_criteria('responsibleFrsId', FRS_ID)
+
+# Deduplicate before fetching
+unique_ids = list(set(territory_ids) | set(responsible_ids))
+```
+
+**Deduplication point:** IDs merged BEFORE document fetch to prevent duplicate API calls.
+
+#### Watermark Management
+
+##### Full Load
+- Initializes both watermarks to the same value (max `dateUpdated` from fetched documents)
+- Sets baseline for incremental sync
+
+##### Incremental Sync
+- Reads both watermarks independently
+- Executes two searches with different `dateUpdated >= [watermark]` filters
+- Calculates new watermarks from EACH search's results (not from merged documents)
+- Updates both watermarks separately
+
+**Example:**
+```
+Last run:
+  territory_watermark: 2026-06-18 08:05:00
+  responsible_watermark: 2026-06-18 08:10:00
+
+This run:
+  Territory search (>= 08:05) → [incident_X, incident_Y]
+  Responsible search (>= 08:10) → [incident_Y, incident_Z]
+  
+  Unique to fetch: [X, Y, Z] (Y fetched once!)
+  
+  New watermarks:
+    territory: max(X.dateUpdated, Y.dateUpdated) = 08:07
+    responsible: max(Y.dateUpdated, Z.dateUpdated) = 08:12
+```
+
+##### Watermark Initialization
+- If state table empty or watermarks NULL: Uses 5-minute lookback for both
+- Safe fallback prevents data loss during first run or error recovery
+
+#### Change Detection
+
+Content hash comparison remains unchanged:
+```python
+df_new.withColumn('content_hash', F.sha2(F.col('raw_json'), 256))
+```
+
+- `op_type='insert'` — New documentId
+- `op_type='update'` — Existing documentId with different content_hash
+- `op_type='backfill_insert'` — Historical cross-border incident from one-time backfill
+
+#### Performance Characteristics
+
+| Metric | Value | Notes |
+|:-------|:------|:------|
+| Territory IDs returned | ~132,000 | All incidents in our territory |
+| Responsible IDs returned | ~132,500 | All incidents we responded to |
+| Overlap | ~99.6% | Most incidents have both fields matching |
+| Unique documents fetched | ~132,700 | Only ~500-700 additional fetches |
+| API efficiency | 49.6% reduction | vs. naive approach (264,500 fetches) |
+
 ### Bronze Full Load
 
 **Notebook:** `01_Bronze_Full_Load.Notebook`

@@ -21,6 +21,8 @@ These supporting notebooks help with initial setup, data exploration, and troubl
 
 | Notebook | Purpose | When to Use |
 |:---------|:--------|:------------|
+| `00_Migrate_State_Table` | Migrate state table to dual-watermark schema | One-time migration to dual-search |
+| `01_Backfill_Responsible_Incidents` | Capture historical cross-border incidents | One-time after dual-search upgrade |
 | `01_Create_Lookup_Tables` | Create Delta lookup tables from controlled lists | Initial setup, periodic refresh |
 | `Find_Your_FRS_ID` | Lookup your organisation's FRS ID | Initial setup |
 | `Explore_Package_Schema` | View FaRDaP API data structure | Understanding data model |
@@ -31,6 +33,67 @@ These supporting notebooks help with initial setup, data exploration, and troubl
 | `dup_frsincidentnumber` | Find duplicate incident numbers | Data quality checks |
 
 ---
+
+## Backfill Responsible Incidents
+
+📁 **Location:** `Supporting_Scripts/01_Backfill_Responsible_Incidents.Notebook`
+
+### Purpose
+
+One-time backfill to capture historical cross-border incidents missed before dual-search implementation
+
+### When to Run
+
+Once after upgrading to dual-search (after Full Load and Incremental notebooks updated)
+
+### What It Does
+
+1. Searches ALL `responsibleFrsId=17` incidents (no date filter)
+2. Anti-joins against existing Bronze table (`Bronze IDs - Responsible IDs`)
+3. Fetches only the missing incidents (~250-700 cross-border responses)
+4. Appends to Bronze table (mode='append')
+5. Logs to CDC with `op_type='backfill_insert'` for audit trail
+
+### Expected Results
+
+```
+Existing Bronze incidents:     132,000
+Responsible incidents (total): 132,500
+─────────────────────────────────────
+Already have:                  131,800  (overlap)
+Missing (to backfill):           700    (cross-border responses)
+```
+
+### Safety Features
+
+- **Anti-join:** Only inserts incidents NOT already in Bronze
+- **Append mode:** Never overwrites existing data
+- **Distinct audit trail:** CDC logs as 'backfill_insert' for tracking
+- **Idempotent:** Safe to re-run (anti-join will find 0 missing incidents)
+
+### Output
+
+- Bronze table: +250-700 incidents
+- CDC log: +250-700 rows with `op_type='backfill_insert'`
+- Console: Incident type breakdown showing cross-border captures
+
+### Verification Query
+
+```sql
+-- Check backfill results
+SELECT 
+  documentId,
+  get_json_object(raw_json, '$.content.incident.territoryFrsId') as territory_frs,
+  get_json_object(raw_json, '$.content.incident.responsibleFrsId') as responsible_frs,
+  sync_timestamp
+FROM fardap_bronze_incidents
+WHERE get_json_object(raw_json, '$.content.incident.territoryFrsId') != '17'
+  AND get_json_object(raw_json, '$.content.incident.responsibleFrsId') = '17'
+LIMIT 20;
+-- Expected: ~250-700 rows showing cross-border incidents
+```
+
+**Note:** This is a **ONE-TIME** operation. After backfill completes, the regular incremental pipeline (with dual-search) will automatically capture all future cross-border incidents.
 
 ## Create Lookup Tables
 

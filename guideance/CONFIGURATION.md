@@ -346,6 +346,34 @@ For complete CDC documentation, see [CDC Change Tracking Guide](CDC_CHANGE_TRACK
 
 ---
 
+## State Table Schema
+
+As of the dual-search implementation (2026-06-18), the `fardap_sync_state` table uses **independent watermarks**:
+
+```json
+{
+  "last_watermark_territory": "2026-06-18T10:30:15.123Z",
+  "last_watermark_responsible": "2026-06-18T10:32:47.456Z",
+  "migration_date": "2026-06-18T08:00:00.000Z",
+  "notes": "Incremental sync: 42 changes processed"
+}
+```
+
+### Migration from Legacy Schema
+
+Legacy single-watermark schema (pre-2026-06-18):
+```json
+{
+  "last_watermark": "2026-06-18T10:30:00.000Z"
+}
+```
+
+Migration notebook: `Supporting_Scripts/00_Migrate_State_Table.Notebook`
+
+**Impact:** No configuration changes required. Notebooks automatically detect and use the appropriate watermark columns.
+
+---
+
 ## Checklist
 
 Before running the pipelines, verify:

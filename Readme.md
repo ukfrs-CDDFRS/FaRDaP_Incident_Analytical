@@ -27,7 +27,7 @@ The **FaRDaP Analytical Fabric Ingestion Platform** is a Microsoft Fabric-based 
 
 - 🔄 Extracts Fire and Rescue Service incident data from the **FaRDaP™ API**
 - 💎 Stores data in a Lakehouse using the **Medallion Architecture** (Bronze → Silver)
-- 📊 Enables analytical reporting through **Power BI Direct Lake** semantic models and further Gold level.
+- 📊 Enables analytical reporting through **Power BI Direct Lake** semantic models
 - ⏱️ Runs **every 5 minutes** for near-real-time data
 
 ### What is FaRDaP?
@@ -73,6 +73,55 @@ The **FaRDaP Analytical Fabric Ingestion Platform** is a Microsoft Fabric-based 
 | **Bronze** | Raw data preservation | JSON documents | Every 5 minutes |
 | **Silver** | Business-ready data | Flattened columns + normalized arrays | After Bronze sync |
 | **Semantic Model** | Power BI reporting | Direct Lake connection | Real-time |
+
+### Bronze Layer: Dual-Search Ingestion
+
+The Bronze layer captures **both** types of incidents for complete coverage:
+
+| Search Type | Match Criteria | Coverage |
+|:------------|:---------------|:---------|
+| **Territory** | `territoryFrsId=17` | Incidents occurring in our territory (~132,000) |
+| **Responsible** | `responsibleFrsId=17` | Incidents we responded to (~132,500) |
+| **Unique Total** | Set union | ~132,700 incidents (deduplication prevents double-fetching) |
+
+#### Three Incident Categories
+
+1. **In our territory, OTHER FRS responded** — `territoryFrsId=17`, `responsibleFrsId≠17` (rare: handful)
+2. **In our territory, WE responded** — Both fields = 17 (vast majority: ~131,000+)
+3. **Outside our territory, WE responded** — `territoryFrsId≠17`, `responsibleFrsId=17` (cross-border: ~250-700)
+
+#### Deduplication Strategy
+
+```
+Execution Flow:
+1. Search territoryFrsId=17     → ID list A [132,000 IDs]
+2. Search responsibleFrsId=17   → ID list B [132,500 IDs]
+3. Merge: set(A) | set(B)       → Unique IDs [132,700 IDs]
+4. Fetch documents              → 132,700 API calls (NOT 264,500!)
+5. MERGE into Bronze            → Idempotent upsert
+```
+
+**Efficiency:** 99.6% overlap between searches means only ~250-700 additional documents fetched.
+
+#### Independent Watermark Tracking
+
+`fardap_sync_state` maintains **separate watermarks** for each search type:
+
+| Column | Purpose |
+|:-------|:--------|
+| `last_watermark_territory` | Highest `dateUpdated` from territory search |
+| `last_watermark_responsible` | Highest `dateUpdated` from responsible search |
+
+**Why separate?** If a territory incident updates at 08:05 and a cross-border incident updates at 08:10, using a single watermark (08:10) would miss future updates to the first incident between 08:05-08:10.
+
+#### Backfill Process
+
+Historical cross-border incidents (pre-dual-search implementation) were captured via one-time backfill:
+
+- **Notebook:** `Supporting_Scripts/01_Backfill_Responsible_Incidents.Notebook`
+- **Method:** Anti-join (fetch only incidents NOT in existing Bronze table)
+- **Volume:** ~250-700 incidents added
+- **CDC tracking:** Logged as `op_type='backfill_insert'`
 
 ---
 
@@ -228,21 +277,43 @@ All notebooks use `var_library_fardap` for configuration:
 
 ### Authentication Features
 
-FaRDaP access tokens have a short lifetime (~20 minutes per spec). The platform uses the dedicated refresh-token endpoint to keep sessions alive without re-sending credentials.
+FaRDaP access tokens have a short lifetime (approximately 20 minutes per API specification). The platform implements a robust token management strategy using the dedicated `/api/v1/auth/access-token-refresh` endpoint to maintain sessions without repeatedly transmitting credentials.
 
 | Feature | Implementation |
 |:--------|:---------------|
-| **Token Expiry Tracking** | Captures `expiresIn` from API; conservative 600s default if absent |
-| **Refresh-Token Flow** | Calls `/api/v1/auth/access-token-refresh` with stored `refreshToken` |
-| **Proactive Refresh** | Refreshes when < 2 minutes remaining (suited to ~20-minute tokens) |
-| **Count-Based Refresh** | Refreshes every 25,000 documents (belt-and-suspenders) |
-| **User-Agent Header** | `Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}` on all API requests |
-| **Thread-Safe Updates** | Token updates protected by lock for parallel processing |
-| **Fallback to Re-auth** | If refresh fails, transparently re-authenticates via `/auth/init` |
+| **Token Expiry Tracking** | Captures `expiresIn` from `/api/v1/auth/init` response; uses conservative 600-second (10-minute) default if absent |
+| **Refresh-Token Flow** | Calls `/api/v1/auth/access-token-refresh` endpoint with stored `refreshToken` from initial authentication |
+| **Proactive Time-Based Refresh** | Automatically refreshes access token when less than 2 minutes remain before expiry |
+| **Count-Based Refresh** | Refreshes after processing 25,000 documents as additional safeguard against expiry |
+| **User-Agent Header** | Identifies requests as `Fabric/FaRDaP-Analytical-Platform/FRS-{FRS_ID}` per API specification |
+| **Thread-Safe Updates** | Token and expiry updates protected by threading lock for parallel document fetching |
+| **Automatic Fallback** | If refresh endpoint fails, transparently re-authenticates via `/api/v1/auth/init` with credentials from Key Vault |
+| **Session Reuse** | Maintains single `requests.Session` per notebook execution for connection pooling and performance |
 
 ### Security
 
-All FaRDaP API calls use HTTPS with **certificate verification enabled** (no `verify=False`). If your environment uses a private/self-signed CA, set `REQUESTS_CA_BUNDLE` to the CA bundle path on the Spark workers rather than disabling verification.
+#### TLS Certificate Verification
+
+All FaRDaP API calls use HTTPS with **certificate verification enabled by default**. The platform does not use `verify=False` or disable SSL warnings, ensuring secure communication with the API.
+
+**For Self-Signed or Private CA Environments:**
+
+If your Fire and Rescue Service uses a private Certificate Authority or self-signed certificates, configure the certificate bundle path instead of disabling verification:
+
+```python
+# Set environment variable on Spark workers
+import os
+os.environ['REQUESTS_CA_BUNDLE'] = '/path/to/your/ca-bundle.crt'
+```
+
+Alternatively, add the CA certificate to the system trust store on all Fabric Spark nodes.
+
+#### Credential Management
+
+- FaRDaP username and password stored in **Azure Key Vault**
+- Credentials never logged or written to tables
+- Access tokens and refresh tokens held in memory only
+- Managed Identity used for Key Vault authentication (no credential duplication)
 
 ---
 

@@ -47,15 +47,43 @@ The FaRDaP Analytical Fabric Ingestion Platform uses a **Medallion Architecture*
 
 ### fardap_sync_state
 
-**Description:** Bronze sync watermark — single row tracking the last successful sync point
+**Purpose:** Track watermarks for incremental Bronze sync (dual-search implementation)
+
+**Schema:**
 
 | Column | Type | Description |
 |:-------|:-----|:------------|
-| `last_watermark` | String | Highest `change_ts` (or `sync_timestamp` fallback) processed in the last run |
+| `last_watermark_territory` | `timestamp` | Highest `dateUpdated` from territory search (`territoryFrsId` match) |
+| `last_watermark_responsible` | `timestamp` | Highest `dateUpdated` from responsible search (`responsibleFrsId` match) |
+| `migration_date` | `timestamp` | When state table was last migrated/updated |
+| `notes` | `string` | Human-readable notes about the update |
+
+**Key Behaviors:**
+
+- **Single row table** — Always contains exactly 1 row (overwrite mode)
+- **Independent watermarks** — Each advances based on its respective search results
+- **Inclusive range** — Searches use `>=` (not `>`) to handle concurrent updates at same timestamp
+- **Fallback** — If NULL or missing, uses 5-minute lookback
 
 **Update Mode:** OVERWRITE (single row)
 
-**Usage:** Read at the start of `01_Bronze_Incremental_Sync` to drive the `dateUpdated > {last_watermark}` API filter.
+**Usage:** Read at the start of `01_Bronze_Incremental_Sync` to drive the two `dateUpdated >= {watermark}` API filters (one for territory, one for responsible).
+
+**Migration History:**
+
+1. **Original schema:** Single `last_watermark` column (pre-dual-search)
+2. **Current schema:** Dual watermarks + metadata (migrated 2026-06-18)
+
+**Sample Query:**
+
+```sql
+SELECT 
+  last_watermark_territory,
+  last_watermark_responsible,
+  TIMESTAMPDIFF(SECOND, last_watermark_territory, last_watermark_responsible) as watermark_diff_seconds,
+  notes
+FROM fardap_sync_state;
+```
 
 ---
 

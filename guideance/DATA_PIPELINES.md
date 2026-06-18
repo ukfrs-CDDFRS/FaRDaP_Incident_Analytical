@@ -48,6 +48,8 @@ The FaRDaP Analytical Platform uses **Microsoft Fabric Data Pipelines** to orche
 
 **Pipeline:** `PL_FaRDaP_inc_full_load`
 
+**Trigger:** Manual (on-demand)
+
 ### Purpose
 
 Complete data extraction and transformation for:
@@ -55,6 +57,27 @@ Complete data extraction and transformation for:
 - Full refresh after schema changes
 - Disaster recovery
 - Environment provisioning
+
+### Notebooks
+
+1. `01_Bronze_Full_Load.Notebook` ⚡ **Dual-search enabled**
+   - Searches both `territoryFrsId=17` AND `responsibleFrsId=17`
+   - Deduplicates IDs before fetching (~132,700 unique incidents)
+   - Initializes both watermarks in `fardap_sync_state`
+2. `02_Silver_Full_Transform_Enhanced.Notebook`
+
+**Expected Duration:** 30 minutes - 2 hours (depending on data volume)
+
+**When to Run:**
+- Initial platform setup
+- After major schema changes
+- Disaster recovery / data corruption
+- Testing dual-search implementation
+
+**Key Outputs:**
+- `fardap_bronze_incidents`: All incidents (overwrites existing)
+- `fardap_bronze_cdc_log`: Change records (appends)
+- `fardap_sync_state`: Both watermarks initialized to same max timestamp
 
 ### Activities
 
@@ -103,12 +126,46 @@ Complete data extraction and transformation for:
 
 **Pipeline:** `PL_FaRDaP_inc_incremental`
 
+**Trigger:** Scheduled (every 5 minutes)
+
 ### Purpose
 
 Keep data current with minimal processing:
 - Near real-time updates (5-minute intervals)
 - Only process changed records
 - Minimal compute usage
+
+### Notebooks
+
+1. `01_Bronze_Incremental_Sync.Notebook` ⚡ **Dual-search with independent watermarks**
+   - Reads `last_watermark_territory` and `last_watermark_responsible`
+   - Executes two searches with different `dateUpdated >=` filters
+   - Deduplicates overlapping IDs before fetching
+   - Updates each watermark independently based on its search results
+2. `02_Silver_Incremental_Transform_Enhanced.Notebook`
+
+**Expected Duration:** 1-2 minutes (normal operations)
+
+**Dual-Search Behavior:**
+
+```
+Example run:
+  Previous watermarks: territory=08:05, responsible=08:10
+  
+  Search 1 (territory >= 08:05): Returns [incident_A, incident_B]
+  Search 2 (responsible >= 08:10): Returns [incident_B, incident_C]
+  
+  Unique IDs to fetch: [A, B, C] (B fetched once, not twice!)
+  
+  New watermarks:
+    territory: max(A.dateUpdated, B.dateUpdated)
+    responsible: max(B.dateUpdated, C.dateUpdated)
+```
+
+**Performance:**
+- Typically 0-50 changed incidents per run
+- Cross-border incidents (~250-700 total) may update independently
+- Deduplication prevents double-fetching when same incident appears in both searches
 
 ### Activities
 
