@@ -1,6 +1,6 @@
 # Technical Documentation
 
-> Complete technical reference for the FaRDaP Analytical Platform
+> Complete technical reference for the FaRDaP Analytical Fabric Ingestion Platform
 
 ---
 

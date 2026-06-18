@@ -1,6 +1,6 @@
 # Change Data Capture (CDC) Guide
 
-> Comprehensive guide to understanding and using CDC logs in the FaRDaP Analytical Platform
+> Comprehensive guide to understanding and using CDC logs in the FaRDaP Analytical Fabric Ingestion Platform
 
 ---
 

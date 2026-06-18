@@ -16,7 +16,7 @@
 
 ## Overview
 
-The FaRDaP Analytical Platform uses a **Medallion Architecture** with two data layers:
+The FaRDaP Analytical Fabric Ingestion Platform uses a **Medallion Architecture** with two data layers:
 
 | Layer | Purpose | Tables | Update Mode |
 |:------|:--------|:-------|:------------|

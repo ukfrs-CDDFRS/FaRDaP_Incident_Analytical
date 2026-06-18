@@ -1,6 +1,6 @@
 # Configuration Guide
 
-> Environment setup and variable configuration for the FaRDaP Analytical Platform
+> Environment setup and variable configuration for the FaRDaP Analytical Fabric Ingestion Platform
 
 ---
 

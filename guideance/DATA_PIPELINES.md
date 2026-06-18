@@ -1,6 +1,6 @@
 # Data Pipelines
 
-> Orchestration of the FaRDaP Analytical Platform workflows
+> Orchestration of the FaRDaP Analytical Fabric Ingestion Platform workflows
 
 ---
 

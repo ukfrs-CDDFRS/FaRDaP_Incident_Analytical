@@ -1,10 +1,10 @@
-# FaRDaP Analytical Platform
+# FaRDaP Analytical Fabric Ingestion Platform
 
 [![Microsoft Fabric](https://img.shields.io/badge/Microsoft-Fabric-blue)](https://www.microsoft.com/en-us/microsoft-fabric)
 [![Power BI](https://img.shields.io/badge/Power%20BI-Direct%20Lake-yellow)](https://powerbi.microsoft.com/)
 [![License](https://img.shields.io/badge/License-See%20LICENSE-green)](../LICENSE)
 
-> **Enterprise data pipeline for Fire and Rescue Service incident data using Microsoft Fabric's Medallion Architecture**
+> **Enterprise data pipeline for ingesting Fire and Rescue Service incident data from MHCLG FaRDaP using Microsoft Fabric's Medallion Architecture**
 
 ---
 
@@ -23,16 +23,16 @@
 
 ## Overview
 
-The **FaRDaP Analytical Platform** is a Microsoft Fabric-based enterprise data pipeline that:
+The **FaRDaP Analytical Fabric Ingestion Platform** is a Microsoft Fabric-based enterprise data pipeline that:
 
 - 🔄 Extracts Fire and Rescue Service incident data from the **FaRDaP™ API**
 - 💎 Stores data in a Lakehouse using the **Medallion Architecture** (Bronze → Silver)
-- 📊 Enables analytical reporting through **Power BI Direct Lake** semantic models
+- 📊 Enables analytical reporting through **Power BI Direct Lake** semantic models and further Gold level.
 - ⏱️ Runs **every 5 minutes** for near-real-time data
 
 ### What is FaRDaP?
 
-**FaRDaP** (Fire and Rescue Data Platform) is the UK Home Office system for collecting and managing incident data from Fire and Rescue Services.
+**FaRDaP** (Fire and Rescue Data Platform) is the UK Ministry of Housing, Communities and Local Government (MHCLG) system for collecting and managing incident data from Fire and Rescue Services.
 
 ### Key Features
 
