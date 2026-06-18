@@ -2,10 +2,11 @@
   "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
   "metadata": {
     "type": "Notebook",
-    "displayName": "Delete_Bronze_Duplicates"
+    "displayName": "Delete_Bronze_Duplicates",
+    "description": "Delete duplicate records from fardap_bronze_incidents keeping most recent by sync_timestamp"
   },
   "config": {
     "version": "2.0",
-    "logicalId": "00000000-0000-0000-0000-000000000000"
+    "logicalId": "a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
   }
 }

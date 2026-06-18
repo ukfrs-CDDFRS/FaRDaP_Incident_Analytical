@@ -2,10 +2,11 @@
   "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
   "metadata": {
     "type": "Notebook",
-    "displayName": "Delete_Silver_Duplicates"
+    "displayName": "Delete_Silver_Duplicates",
+    "description": "Delete all duplicate records from silver tables including array tables"
   },
   "config": {
     "version": "2.0",
-    "logicalId": "00000000-0000-0000-0000-000000000000"
+    "logicalId": "b2c3d4e5-6f7a-8b9c-0d1e-2f3a4b5c6d7e"
   }
 }

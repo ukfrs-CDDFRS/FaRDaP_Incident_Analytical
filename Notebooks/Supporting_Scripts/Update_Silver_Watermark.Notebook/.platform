@@ -2,10 +2,11 @@
   "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
   "metadata": {
     "type": "Notebook",
-    "displayName": "Update_Silver_Watermark"
+    "displayName": "Update_Silver_Watermark",
+    "description": "Update fardap_silver_flatten_state watermark to reprocess records from specific timestamp"
   },
   "config": {
     "version": "2.0",
-    "logicalId": "00000000-0000-0000-0000-000000000000"
+    "logicalId": "d4e5f6a7-8b9c-0d1e-2f3a-4b5c6d7e8f9a"
   }
 }
