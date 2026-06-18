@@ -22,9 +22,16 @@
 
 # MARKDOWN ********************
 
-# # 01 Bronze Incremental Sync
+# # 01 Bronze Incremental Sync (Dual-Search)
 # 
 # Fetch only **changed/new documents** from FaRDaP API since the last successful run.
+# 
+# **Dual-Search Strategy:**
+# - Searches **territoryFrsId** with territory watermark - incidents in our territory
+# - Searches **responsibleFrsId** with responsible watermark - incidents we're responsible for
+# - Independent watermarks prevent missing updates when searches have different highest timestamps
+# - Deduplicates IDs before fetching (significant efficiency gain)
+# - Updates both watermarks separately from each search's results
 # 
 # **When to run:**
 # - Every 5-10 minutes (production schedule)
@@ -32,20 +39,22 @@
 # - Continuously for near-real-time updates
 # 
 # **Input:**
-# - Last watermark from `fardap_sync_state` (highest `change_ts` processed)
+# - Dual watermarks from `fardap_sync_state` (last_watermark_territory, last_watermark_responsible)
 # 
 # **Output tables:**
 # - `fardap_bronze_incidents` - Updated with new/changed records (MERGE mode)
 # - `fardap_bronze_cdc_log` - Appended with change tracking
-# - `fardap_sync_state` - Updated watermark
+# - `fardap_sync_state` - Updated dual watermarks
 # 
 # **Duration:** 1-2 minutes (network bound)
 # 
 # **Key benefits:**
 # - ✅ Only fetches changed documents
+# - ✅ Captures cross-border incident updates
 # - ✅ Idempotent (safe to re-run)
 # - ✅ Preserves change history in CDC log
 # - ✅ Handles concurrent updates at same timestamp (collision-safe)
+# - ✅ Independent watermarks ensure no missed updates
 
 # MARKDOWN ********************
 
@@ -126,47 +135,112 @@ def to_api_utc_millis(dt):
     dt_utc = dt_utc.astimezone(timezone.utc)
     return dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
-# Get last watermark
+# Get last watermarks (dual-watermark schema)
 DEFAULT_LOOKBACK_MINUTES = 5
 
 try:
     watermark_df = spark.table(TABLE_STATE)
     
-    rows = (
-        watermark_df
-        .select("last_watermark")
-        .orderBy(F.col("last_watermark").desc())
-        .limit(1)
-        .collect()
-    )
-
-    if not rows or rows[0][0] is None:
-        UPDATED_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-        print("📍 No watermark found, using 5-minute lookback")
-    else:
-        value = rows[0][0]
-
-        # normalise to timezone-aware datetime
-        if isinstance(value, str):
-            iso = value.strip()
-            if iso.endswith("Z"):
-                iso = iso[:-1] + "+00:00"
-            UPDATED_FROM_DT = datetime.fromisoformat(iso)
-            if UPDATED_FROM_DT.tzinfo is None:
-                UPDATED_FROM_DT = UPDATED_FROM_DT.replace(tzinfo=timezone.utc)
+    # Check if table has dual-watermark schema
+    columns = watermark_df.columns
+    has_dual_watermarks = "last_watermark_territory" in columns and "last_watermark_responsible" in columns
+    
+    if has_dual_watermarks:
+        # Dual-watermark schema (post-migration)
+        rows = (
+            watermark_df
+            .select("last_watermark_territory", "last_watermark_responsible")
+            .limit(1)
+            .collect()
+        )
+        
+        if not rows:
+            TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
+            RESPONSIBLE_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
+            print("📍 No watermarks found, using 5-minute lookback for both")
         else:
-            UPDATED_FROM_DT = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            # Parse territory watermark
+            territory_value = rows[0]["last_watermark_territory"]
+            if territory_value is None:
+                TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
+                print("⚠️  Territory watermark is NULL, using 5-minute lookback")
+            else:
+                if isinstance(territory_value, str):
+                    iso = territory_value.strip()
+                    if iso.endswith("Z"):
+                        iso = iso[:-1] + "+00:00"
+                    TERRITORY_FROM_DT = datetime.fromisoformat(iso)
+                    if TERRITORY_FROM_DT.tzinfo is None:
+                        TERRITORY_FROM_DT = TERRITORY_FROM_DT.replace(tzinfo=timezone.utc)
+                else:
+                    TERRITORY_FROM_DT = territory_value if territory_value.tzinfo else territory_value.replace(tzinfo=timezone.utc)
+                print(f"📍 Territory watermark: {TERRITORY_FROM_DT}")
+            
+            # Parse responsible watermark
+            responsible_value = rows[0]["last_watermark_responsible"]
+            if responsible_value is None:
+                RESPONSIBLE_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
+                print("⚠️  Responsible watermark is NULL, using 5-minute lookback")
+            else:
+                if isinstance(responsible_value, str):
+                    iso = responsible_value.strip()
+                    if iso.endswith("Z"):
+                        iso = iso[:-1] + "+00:00"
+                    RESPONSIBLE_FROM_DT = datetime.fromisoformat(iso)
+                    if RESPONSIBLE_FROM_DT.tzinfo is None:
+                        RESPONSIBLE_FROM_DT = RESPONSIBLE_FROM_DT.replace(tzinfo=timezone.utc)
+                else:
+                    RESPONSIBLE_FROM_DT = responsible_value if responsible_value.tzinfo else responsible_value.replace(tzinfo=timezone.utc)
+                print(f"📍 Responsible watermark: {RESPONSIBLE_FROM_DT}")
+    
+    else:
+        # Legacy single-watermark schema (pre-migration)
+        print("⚠️  WARNING: Single-watermark schema detected!")
+        print("   Please run migration notebook: Supporting_Scripts/00_Migrate_State_Table")
+        print("   Falling back to single watermark for both searches...")
+        
+        rows = (
+            watermark_df
+            .select("last_watermark")
+            .orderBy(F.col("last_watermark").desc())
+            .limit(1)
+            .collect()
+        )
 
-        print(f"📍 Using stored watermark: {UPDATED_FROM_DT}")
+        if not rows or rows[0][0] is None:
+            TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
+            RESPONSIBLE_FROM_DT = TERRITORY_FROM_DT
+            print("📍 No watermark found, using 5-minute lookback")
+        else:
+            value = rows[0][0]
+            if isinstance(value, str):
+                iso = value.strip()
+                if iso.endswith("Z"):
+                    iso = iso[:-1] + "+00:00"
+                UPDATED_FROM_DT = datetime.fromisoformat(iso)
+                if UPDATED_FROM_DT.tzinfo is None:
+                    UPDATED_FROM_DT = UPDATED_FROM_DT.replace(tzinfo=timezone.utc)
+            else:
+                UPDATED_FROM_DT = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            
+            # Use same watermark for both (legacy behavior)
+            TERRITORY_FROM_DT = UPDATED_FROM_DT
+            RESPONSIBLE_FROM_DT = UPDATED_FROM_DT
+            print(f"📍 Using single watermark for both: {UPDATED_FROM_DT}")
 
 except Exception as e:
     print(f"⚠️  Could not read state table: {e}")
-    UPDATED_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-    print("📍 Using 5-minute lookback")
+    TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
+    RESPONSIBLE_FROM_DT = TERRITORY_FROM_DT
+    print("📍 Using 5-minute lookback for both")
 
-# Use INCLUSIVE search (no +1ms) to avoid missing concurrent updates at same timestamp
-UPDATED_FROM = to_api_utc_millis(UPDATED_FROM_DT)
-print(f"📍 Search from (inclusive): {UPDATED_FROM}")
+# Convert to API format
+TERRITORY_FROM = to_api_utc_millis(TERRITORY_FROM_DT)
+RESPONSIBLE_FROM = to_api_utc_millis(RESPONSIBLE_FROM_DT)
+
+print(f"\n📍 Search ranges (inclusive):")
+print(f"   Territory from:    {TERRITORY_FROM}")
+print(f"   Responsible from:  {RESPONSIBLE_FROM}")
 
 # Authentication and session helpers
 token_lock = threading.Lock()
@@ -275,22 +349,37 @@ print('✅ Session helpers initialized')
 
 # CELL ********************
 
-# Search for changed incident IDs since watermark
-def search_changed_ids(batch_size=BATCH_SIZE):
+# Search for changed incidents since watermark with configurable match criteria
+def search_with_watermark(match_field, frs_id, updated_from, batch_size=BATCH_SIZE):
+    """
+    Search for changed incidents by match field since watermark.
+    
+    Args:
+        match_field: Either 'territoryFrsId' or 'responsibleFrsId'
+        frs_id: The FRS ID to search for
+        updated_from: ISO timestamp string for dateUpdated range filter
+        batch_size: Number of results per page
+    
+    Returns:
+        Tuple of (list of document IDs, list of search result objects with dateUpdated)
+    """
     url = f'{API_BASE_URL}/api/v1/document/search'
     cursor = None
     ids = []
+    search_results = []
     page = 0
+    
+    print(f'🔍 Searching {match_field}={frs_id} since {updated_from}...')
     
     while True:
         page += 1
         payload = {
             'query': {
                 'list': {'documentTypes': ['Incident']},
-                'match': {'territoryFrsId': str(FRS_ID)},
+                'match': {match_field: str(frs_id)},
                 'range': [
                     {
-                        'from': UPDATED_FROM,
+                        'from': updated_from,
                         'field': 'dateUpdated'
                     }
                 ]
@@ -315,22 +404,22 @@ def search_changed_ids(batch_size=BATCH_SIZE):
             raise RuntimeError(f'FaRDaP search returned errors: {errors}')
         results = data.get('results', [])
         
-        new_ids = [
-            d.get('properties', {}).get('documentId')
-            for d in results
-            if d.get('properties', {}).get('documentId')
-        ]
-        ids.extend(new_ids)
+        # Extract IDs and keep full results for watermark tracking
+        for doc in results:
+            doc_id = doc.get('properties', {}).get('documentId')
+            if doc_id:
+                ids.append(doc_id)
+                search_results.append(doc)
         
         new_cursor = data.get('search', {}).get('cursor', {}).get('lastDocumentValues')
-        print(f'📄 Page {page}: Fetched {len(new_ids):,} changed IDs | Total: {len(ids):,} | Has more: {bool(new_cursor)}')
+        print(f'   📄 Page {page}: +{len([d for d in results if d.get("properties", {}).get("documentId")]):,} changed IDs | Total: {len(ids):,} | Has more: {bool(new_cursor)}')
         
         if not new_cursor or len(results) == 0:
             break
         cursor = new_cursor
     
-    print(f'✅ Search complete: {len(ids):,} changed incidents since {UPDATED_FROM}')
-    return ids
+    print(f'   ✅ {match_field} search complete: {len(ids):,} changed incidents')
+    return ids, search_results
 
 # Fetch individual incident details
 def fetch_one(doc_id):
@@ -391,37 +480,70 @@ print('✅ Fetch functions defined')
 
 # CELL ********************
 
-# Search for changed IDs
-print('🔍 Searching for changed incidents...')
-changed_ids = search_changed_ids()
+# Execute dual-search with separate watermarks
+print('='*60)
+print('🔍 DUAL-SEARCH: Territory + Responsible (Incremental)')
+print('='*60)
 
-if len(changed_ids) == 0:
+# Search 1: territoryFrsId (incidents in our territory, changed since territory watermark)
+territory_ids, territory_results = search_with_watermark('territoryFrsId', FRS_ID, TERRITORY_FROM)
+
+# Search 2: responsibleFrsId (incidents we're responsible for, changed since responsible watermark)
+responsible_ids, responsible_results = search_with_watermark('responsibleFrsId', FRS_ID, RESPONSIBLE_FROM)
+
+# Calculate overlap and deduplicate
+territory_set = set(territory_ids)
+responsible_set = set(responsible_ids)
+all_unique_ids = list(territory_set | responsible_set)
+
+overlap_count = len(territory_set & responsible_set)
+territory_only = len(territory_set - responsible_set)
+responsible_only = len(responsible_set - territory_set)
+
+print('\n' + '='*60)
+print('📊 DUAL-SEARCH SUMMARY (Incremental)')
+print('='*60)
+print(f'Territory changes:     {len(territory_ids):>8,}')
+print(f'Responsible changes:   {len(responsible_ids):>8,}')
+print(f'---')
+print(f'Overlap:               {overlap_count:>8,}')
+print(f'Territory only:        {territory_only:>8,}')
+print(f'Responsible only:      {responsible_only:>8,}')
+print(f'---')
+print(f'Total unique changes:  {len(all_unique_ids):>8,}')
+print('='*60)
+
+if len(all_unique_ids) == 0:
     print('\n✅ No changes since last run. Exiting.')
     # Signal downstream pipeline activities to skip when the notebook output carries exitValue=no_changes.
     notebookutils.notebook.exit("no_changes")
+
+# Store results for watermark calculation later
+territory_search_results = territory_results
+responsible_search_results = responsible_results
 
 # Fetch changed documents in parallel
 results = []
 completed = 0
 
-print(f'\n📥 Fetching {len(changed_ids):,} changed incidents in parallel (MAX_WORKERS={MAX_WORKERS})...')
+print(f'\n📥 Fetching {len(all_unique_ids):,} changed incidents in parallel (MAX_WORKERS={MAX_WORKERS})...')
 
 import concurrent.futures
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-    futures = [pool.submit(fetch_one, doc_id) for doc_id in changed_ids]
+    futures = [pool.submit(fetch_one, doc_id) for doc_id in all_unique_ids]
     for fut in concurrent.futures.as_completed(futures):
         rec = fut.result()
         if rec:
             results.append(rec)
         completed += 1
         if completed % 500 == 0:
-            print(f'   Progress: {completed:,}/{len(changed_ids):,} ({len(results):,} with data)')
+            print(f'   Progress: {completed:,}/{len(all_unique_ids):,} ({len(results):,} with data)')
         if completed % REFRESH_EVERY == 0:
             print(f'   🔄 Periodic token refresh...')
             refresh_access_token()
 
-print(f'\n✅ Fetch complete: {len(results):,} / {len(changed_ids):,} documents fetched')
+print(f'\n✅ Fetch complete: {len(results):,} / {len(all_unique_ids):,} documents fetched')
 
 # METADATA ********************
 
@@ -549,28 +671,62 @@ else:
 
 # CELL ********************
 
-# Update watermark to the highest change timestamp we processed
-watermark = df_raw.select(F.coalesce(F.col('change_ts'), F.col('sync_timestamp')).alias('ts')) \
-    .agg(F.max('ts')).collect()[0][0]
+# Calculate separate watermarks from each search
+def calculate_watermark_from_search_results(search_results):
+    """Calculate max dateUpdated from search API results."""
+    if not search_results:
+        return None
+    
+    max_date_updated = None
+    for doc in search_results:
+        date_updated = doc.get('properties', {}).get('dateUpdated')
+        if date_updated:
+            dt = parse_api_datetime(date_updated)
+            if dt and (max_date_updated is None or dt > max_date_updated):
+                max_date_updated = dt
+    
+    return max_date_updated
 
-# Convert to string format for consistency with state table
-if watermark:
-    watermark_dt = parse_api_datetime(watermark)
-    if watermark_dt is None and hasattr(watermark, 'to_pydatetime'):
-        watermark_dt = parse_api_datetime(watermark.to_pydatetime())
-    watermark_str = to_api_utc_millis(watermark_dt) if watermark_dt else str(watermark)
+# Calculate territory watermark from territory search results
+territory_watermark_dt = calculate_watermark_from_search_results(territory_search_results)
+if territory_watermark_dt:
+    territory_watermark_str = to_api_utc_millis(territory_watermark_dt)
 else:
-    watermark_str = to_api_utc_millis(datetime.now(timezone.utc))
+    # No changes in territory search, keep existing watermark
+    territory_watermark_str = TERRITORY_FROM
 
-df_state = spark.createDataFrame([(watermark_str,)], ['last_watermark'])
+# Calculate responsible watermark from responsible search results
+responsible_watermark_dt = calculate_watermark_from_search_results(responsible_search_results)
+if responsible_watermark_dt:
+    responsible_watermark_str = to_api_utc_millis(responsible_watermark_dt)
+else:
+    # No changes in responsible search, keep existing watermark
+    responsible_watermark_str = RESPONSIBLE_FROM
 
-print(f'\n🏁 Updating state watermark to: {watermark_str}')
+# For backwards compatibility, set last_watermark to the max of both
+# (deprecated column, but kept to avoid breaking downstream code)
+max_watermark_dt = max(
+    filter(None, [territory_watermark_dt, responsible_watermark_dt]),
+    default=datetime.now(timezone.utc)
+)
+legacy_watermark_str = to_api_utc_millis(max_watermark_dt)
+
+# Create state table with dual watermarks
+df_state = spark.createDataFrame([
+    (legacy_watermark_str, territory_watermark_str, responsible_watermark_str)
+], ['last_watermark', 'last_watermark_territory', 'last_watermark_responsible'])
+
+print(f'\n🏁 Updating dual watermarks:')
+print(f'   Territory watermark:    {territory_watermark_str}')
+print(f'   Responsible watermark:  {responsible_watermark_str}')
+print(f'   (last_watermark={legacy_watermark_str} for backwards compatibility)')
+
 df_state.write \
     .format('delta') \
     .mode('overwrite') \
     .saveAsTable(TABLE_STATE)
 
-print(f'✅ State table updated')
+print(f'✅ State table updated with dual watermarks')
 
 # Signal downstream pipeline to skip if no changes detected
 if cdc_count == 0:

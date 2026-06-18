@@ -22,9 +22,15 @@
 
 # MARKDOWN ********************
 
-# # 01 Bronze Full Load
+# # 01 Bronze Full Load (Dual-Search)
 # 
 # One-time (or occasional) full extract of all FaRDaP documents into Lakehouse Delta tables.
+# 
+# **Dual-Search Strategy:**
+# - Searches **territoryFrsId** - incidents that occurred in our territory
+# - Searches **responsibleFrsId** - incidents we were responsible for (even if elsewhere)
+# - Deduplicates IDs before fetching (99.6% overlap = significant efficiency gain)
+# - Captures ~250-700 cross-border incidents missed by territory-only search
 # 
 # **When to run:**
 # - Initial setup (once)
@@ -34,7 +40,7 @@
 # **Output tables:**
 # - `fardap_bronze_incidents` - All incidents in raw JSON form
 # - `fardap_bronze_cdc_log` - Change tracking log (all records marked as 'insert' on first run)
-# - `fardap_sync_state` - Watermark for resumability
+# - `fardap_sync_state` - Dual watermarks (last_watermark_territory, last_watermark_responsible)
 # 
 # **Duration:** 30 mins - several hours (depending on volume)
 
@@ -201,19 +207,33 @@ authenticate()
 
 # CELL ********************
 
-# Fetch all incident IDs using search endpoint
-def search_all_ids(batch_size=BATCH_SIZE):
+# Fetch incident IDs using search endpoint with configurable match criteria
+def search_by_criteria(match_field, frs_id, batch_size=BATCH_SIZE):
+    """
+    Search for incidents by a specific match field (territoryFrsId or responsibleFrsId).
+    
+    Args:
+        match_field: Either 'territoryFrsId' or 'responsibleFrsId'
+        frs_id: The FRS ID to search for
+        batch_size: Number of results per page
+    
+    Returns:
+        Tuple of (list of document IDs, list of search result objects with dateUpdated)
+    """
     url = f'{API_BASE_URL}/api/v1/document/search'
     cursor = None
     ids = []
+    search_results = []
     page = 0
+    
+    print(f'🔍 Searching for {match_field}={frs_id}...')
     
     while True:
         page += 1
         payload = {
             'query': {
                 'list': {'documentTypes': ['Incident']},
-                'match': {'territoryFrsId': str(FRS_ID)}
+                'match': {match_field: str(frs_id)}
             },
             'cursor': {'size': batch_size}
         }
@@ -235,22 +255,22 @@ def search_all_ids(batch_size=BATCH_SIZE):
             raise RuntimeError(f'FaRDaP search returned errors: {errors}')
         results = data.get('results', [])
         
-        new_ids = [
-            d.get('properties', {}).get('documentId')
-            for d in results
-            if d.get('properties', {}).get('documentId')
-        ]
-        ids.extend(new_ids)
+        # Extract IDs and keep full results for watermark tracking
+        for doc in results:
+            doc_id = doc.get('properties', {}).get('documentId')
+            if doc_id:
+                ids.append(doc_id)
+                search_results.append(doc)
         
         new_cursor = data.get('search', {}).get('cursor', {}).get('lastDocumentValues')
-        print(f'📄 Page {page}: Fetched {len(new_ids):,} IDs | Total: {len(ids):,} | Has more: {bool(new_cursor)}')
+        print(f'   📄 Page {page}: +{len([d for d in results if d.get("properties", {}).get("documentId")]):,} IDs | Total: {len(ids):,} | Has more: {bool(new_cursor)}')
         
         if not new_cursor or len(results) == 0:
             break
         cursor = new_cursor
     
-    print(f'✅ Search complete: {page} pages, {len(ids):,} total IDs')
-    return ids
+    print(f'   ✅ {match_field} search complete: {page} pages, {len(ids):,} total IDs')
+    return ids, search_results
 
 # Fetch individual incident details
 def fetch_one(doc_id):
@@ -311,31 +331,60 @@ print('✅ Fetch functions defined')
 
 # CELL ********************
 
-# Pull all IDs then fetch documents in parallel
+# Execute dual-search: territoryFrsId + responsibleFrsId
 import concurrent.futures
 
-print('🔍 Starting full ID search...')
-all_ids = search_all_ids()
+print('='*60)
+print('🔍 DUAL-SEARCH: Territory + Responsible')
+print('='*60)
+
+# Search 1: territoryFrsId (incidents that occurred in our territory)
+territory_ids, territory_results = search_by_criteria('territoryFrsId', FRS_ID)
+
+# Search 2: responsibleFrsId (incidents we were responsible for, even if elsewhere)
+responsible_ids, responsible_results = search_by_criteria('responsibleFrsId', FRS_ID)
+
+# Calculate overlap and deduplicate
+territory_set = set(territory_ids)
+responsible_set = set(responsible_ids)
+all_unique_ids = list(territory_set | responsible_set)
+
+overlap_count = len(territory_set & responsible_set)
+territory_only = len(territory_set - responsible_set)
+responsible_only = len(responsible_set - territory_set)
+
+print('\n' + '='*60)
+print('📊 DUAL-SEARCH SUMMARY')
+print('='*60)
+print(f'Territory IDs:     {len(territory_ids):>8,}')
+print(f'Responsible IDs:   {len(responsible_ids):>8,}')
+print(f'---')
+print(f'Overlap:           {overlap_count:>8,} ({overlap_count/max(len(all_unique_ids),1)*100:.1f}%)')
+print(f'Territory only:    {territory_only:>8,}')
+print(f'Responsible only:  {responsible_only:>8,}')
+print(f'---')
+print(f'Total unique:      {len(all_unique_ids):>8,}')
+print('='*60)
 
 results = []
 completed = 0
 
-print(f'\n📥 Fetching {len(all_ids):,} incidents in parallel (MAX_WORKERS={MAX_WORKERS})...')
+print(f'\n📥 Fetching {len(all_unique_ids):,} incidents in parallel (MAX_WORKERS={MAX_WORKERS})...')
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-    futures = [pool.submit(fetch_one, doc_id) for doc_id in all_ids]
+    futures = [pool.submit(fetch_one, doc_id) for doc_id in all_unique_ids]
     for fut in concurrent.futures.as_completed(futures):
         rec = fut.result()
         if rec:
             results.append(rec)
         completed += 1
         if completed % 500 == 0:
-            print(f'   Progress: {completed:,}/{len(all_ids):,} ({len(results):,} with data)')
+            print(f'   Progress: {completed:,}/{len(all_unique_ids):,} ({len(results):,} with data)')
         if completed % REFRESH_EVERY == 0:
             print(f'   🔄 Periodic token refresh...')
             refresh_access_token()
 
-print(f'\n✅ Fetch complete: {len(results):,} / {len(all_ids):,} with data')
+print(f'\n✅ Fetch complete: {len(results):,} / {len(all_unique_ids):,} with data')
 assert len(results) > 0, '❌ No documents retrieved; aborting write'
 
 # METADATA ********************
@@ -397,7 +446,7 @@ df_cdc.write \
 
 print(f'✅ Wrote {df_cdc.count():,} records to {TABLE_CDC}')
 
-# Create/update state table with watermark
+# Create/update state table with dual watermarks
 watermark = df_raw.select(F.coalesce(F.col('change_ts'), F.col('sync_timestamp')).alias('ts')) \
     .agg(F.max('ts')).collect()[0][0]
 
@@ -409,16 +458,24 @@ elif hasattr(watermark, 'strftime'):
 else:
     watermark_str = str(watermark)
 
-df_state = spark.createDataFrame([(watermark_str,)], ['last_watermark'])
+# Create state table with dual watermarks
+# Initialize both territory and responsible watermarks to the same value
+df_state = spark.createDataFrame([
+    (watermark_str, watermark_str, watermark_str)
+], ['last_watermark', 'last_watermark_territory', 'last_watermark_responsible'])
 
-print(f'\n🏁 Updating state watermark to: {watermark_str}')
+print(f'\n🏁 Initializing dual watermarks:')
+print(f'   Territory watermark:    {watermark_str}')
+print(f'   Responsible watermark:  {watermark_str}')
+print(f'   (last_watermark kept for backwards compatibility)')
+
 df_state.write \
     .format('delta') \
     .mode('overwrite') \
     .option('overwriteSchema', 'true') \
     .saveAsTable(TABLE_STATE)
 
-print(f'✅ State table updated')
+print(f'✅ State table updated with dual watermarks')
 
 # METADATA ********************
 

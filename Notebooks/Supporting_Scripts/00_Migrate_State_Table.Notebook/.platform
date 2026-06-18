@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "00_Migrate_State_Table",
+    "description": "One-time migration from single watermark to dual-watermark schema for dual-search Bronze ingestion"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "a3f82c4e-91d7-4f28-b5c9-8e4d7f2a6b91"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+  "metadata": {
+    "type": "Notebook",
+    "displayName": "01_Backfill_Responsible_Incidents",
+    "description": "One-time backfill of historical cross-border incidents (responsibleFrsId=17, territoryFrsId≠17)"
+  },
+  "config": {
+    "version": "2.0",
+    "logicalId": "b7e93d5f-82a8-4e39-a6d2-9f5e8c3b7d82"
+  }
+}

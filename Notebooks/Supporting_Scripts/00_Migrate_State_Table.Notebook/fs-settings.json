@@ -1,0 +1,9 @@
+{
+  "gitExclusions": [
+    {
+      "field": "folderName",
+      "op": "==",
+      "value": ""
+    }
+  ]
+}
