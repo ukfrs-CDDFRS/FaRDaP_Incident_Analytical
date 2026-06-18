@@ -159,9 +159,9 @@ else:
         print("\n📄 New data (preview):")
         migrated_df.show(truncate=False)
         
-        # Save the migrated table (overwrite mode)
+        # Save the migrated table (overwrite mode with schema evolution)
         print(f"\n💾 Writing migrated table to {STATE_TABLE}...")
-        migrated_df.write.format("delta").mode("overwrite").saveAsTable(STATE_TABLE)
+        migrated_df.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(STATE_TABLE)
         
         print("✅ Migration completed successfully!")
         

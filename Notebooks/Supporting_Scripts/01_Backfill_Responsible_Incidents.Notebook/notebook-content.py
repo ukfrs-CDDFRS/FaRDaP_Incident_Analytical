@@ -407,8 +407,20 @@ df_backfill = df_backfill.withColumn('sync_timestamp', F.col('sync_timestamp').c
 df_backfill = df_backfill.withColumn('change_ts', F.col('change_ts').cast('timestamp'))
 df_backfill = df_backfill.withColumn('content_hash', F.sha2(F.col('raw_json'), 256))
 
+# Read existing Bronze table schema and cast all columns to match
+existing_bronze = spark.table(TABLE_BRONZE)
+bronze_schema = existing_bronze.schema
+
+# Cast each column to match the existing table's data type
+for field in bronze_schema.fields:
+    df_backfill = df_backfill.withColumn(field.name, F.col(field.name).cast(field.dataType))
+
+# Reorder columns to match existing table
+df_backfill = df_backfill.select(*[field.name for field in bronze_schema.fields])
+
 print(f'📊 Created backfill DataFrame with {df_backfill.count():,} rows')
 print(f'   Columns: {df_backfill.columns}')
+print(f'   Schema aligned with existing Bronze table')
 
 # Preview sample records
 print(f'\n📄 Sample backfill records:')
@@ -425,16 +437,32 @@ if DRY_RUN:
     print(f'   Would append {df_backfill.count():,} rows to {TABLE_BRONZE}')
     print(f'   Would append {df_backfill.count():,} rows to {TABLE_CDC}')
 else:
-    # Append to Bronze table
-    print(f'\n💾 Appending {df_backfill.count():,} backfilled incidents to {TABLE_BRONZE}...')
+    # Check if backfill already partially completed
+    try:
+        df_cdc_existing = spark.table(TABLE_CDC)
+        existing_backfill_count = df_cdc_existing.filter(F.col('op_type') == 'backfill_insert').count()
+        if existing_backfill_count > 0:
+            print(f'\n⚠️  WARNING: Found {existing_backfill_count:,} existing backfill_insert entries in CDC log.')
+            print('   Backfill may have partially completed. Skipping Bronze write to avoid duplicates.')
+            print('   Attempting to complete CDC log only...')
+            skip_bronze_write = True
+        else:
+            skip_bronze_write = False
+    except:
+        skip_bronze_write = False
     
-    df_backfill.write \
-        .format('delta') \
-        .mode('append') \
-        .option('mergeSchema', 'true') \
-        .saveAsTable(TABLE_BRONZE)
-    
-    print(f'✅ Appended to {TABLE_BRONZE}')
+    if not skip_bronze_write:
+        # Append to Bronze table (schema already aligned earlier)
+        print(f'\n💾 Appending {df_backfill.count():,} backfilled incidents to {TABLE_BRONZE}...')
+        
+        df_backfill.write \
+            .format('delta') \
+            .mode('append') \
+            .saveAsTable(TABLE_BRONZE)
+        
+        print(f'✅ Appended to {TABLE_BRONZE}')
+    else:
+        print(f'   ⏭️  Skipped Bronze write (already completed)')
     
     # Create CDC log entries (op_type = 'backfill_insert')
     df_cdc_backfill = df_backfill.select(
@@ -443,6 +471,17 @@ else:
         F.col('change_ts'),
         F.col('sync_timestamp')
     )
+    
+    # Read existing CDC table schema and cast all columns to match
+    existing_cdc = spark.table(TABLE_CDC)
+    cdc_schema = existing_cdc.schema
+    
+    # Cast each column to match the existing CDC table's data type
+    for field in cdc_schema.fields:
+        df_cdc_backfill = df_cdc_backfill.withColumn(field.name, F.col(field.name).cast(field.dataType))
+    
+    # Reorder columns to match existing CDC table
+    df_cdc_backfill = df_cdc_backfill.select(*[field.name for field in cdc_schema.fields])
     
     print(f'\n📋 Appending backfill CDC log ({TABLE_CDC})...')
     df_cdc_backfill.write \
