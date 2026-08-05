@@ -1,5 +1,29 @@
 [
   {
+    "name": "inc_incident",
+    "path": "/Tables",
+    "target": {
+      "type": "OneLake",
+      "oneLake": {
+        "path": "Tables/inc_incident",
+        "itemId": "be2ec80a-7e6e-4677-afbf-5b3c968be5f6",
+        "workspaceId": "d490de08-28a9-47db-a279-22a541a0d38d"
+      }
+    }
+  },
+  {
+    "name": "inc_geographies",
+    "path": "/Tables",
+    "target": {
+      "type": "OneLake",
+      "oneLake": {
+        "path": "Tables/inc_geographies",
+        "itemId": "be2ec80a-7e6e-4677-afbf-5b3c968be5f6",
+        "workspaceId": "d490de08-28a9-47db-a279-22a541a0d38d"
+      }
+    }
+  },
+  {
     "name": "UPRN_Geographies",
     "path": "/Files",
     "target": {
