@@ -8,13 +8,12 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
+# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
-# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
+# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
 # META         }
 # META       ]
 # META     }
@@ -68,25 +67,6 @@ def align_to_table(df, table_name):
                 f"received {source_types[field.name].simpleString()}; explicit migration required"
             )
     return df
-
-
-def normalize_document_id(value, data_type):
-    """Convert identifiers losslessly to an existing string or integral key type."""
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise TypeError(f"Invalid documentId type: {type(value).__name__}")
-    type_name = data_type.simpleString()
-    if type_name == "string":
-        return str(value)
-    bits = {"tinyint": 8, "smallint": 16, "int": 32, "bigint": 64}.get(type_name)
-    if bits is None:
-        raise TypeError(f"Unsupported documentId column type: {type_name}")
-    try:
-        converted = int(value)
-    except ValueError as exc:
-        raise ValueError(f"documentId cannot be represented losslessly as {type_name}") from exc
-    if str(converted) != str(value) or not -(2 ** (bits - 1)) <= converted < 2 ** (bits - 1):
-        raise ValueError(f"documentId cannot be represented losslessly as {type_name}")
-    return converted
 
 
 def array_content_json(records):
@@ -249,13 +229,6 @@ if df_to_flatten.filter(
     raise ValueError("Changed Bronze records have null keys, timestamps or hashes")
 if df_to_flatten.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
     raise ValueError("Changed Bronze records contain duplicate documentId values")
-
-# Hash writes can invalidate this DataFrame's cache and remove its changed rows.
-max_processed_timestamp = df_to_flatten.agg(
-    F.date_format(F.max("sync_timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
-).first()[0]
-if not max_processed_timestamp:
-    raise ValueError("No processed sync_timestamp; refusing to advance Silver state")
 
 print(f"\n[INFO] Will flatten {truly_changed_count} records with changed JSON")
 
@@ -495,16 +468,6 @@ print(f"[INFO] Flattened {truly_changed_count} changed records")
 
 print(f"\n[CDC PREP] Capturing before/after state for change tracking...")
 
-cdc_document_id_type = (
-    spark.table(TABLE_SILVER_CDC).schema["documentId"].dataType
-    if spark.catalog.tableExists(TABLE_SILVER_CDC)
-    else df_silver_changed.schema["documentId"].dataType
-)
-cdc_document_ids = {
-    doc_id: normalize_document_id(doc_id, cdc_document_id_type)
-    for doc_id in changed_ids
-}
-
 # CAPTURE "AFTER" STATE: Collect new records NOW (before any transformations)
 new_records_for_cdc = {}
 for row in df_silver_changed.filter(F.col("documentId").isin(changed_ids)).collect():
@@ -615,12 +578,12 @@ for array_type, table_config in ARRAY_TABLES.items():
         
         # Capture counts
         old_counts_by_doc = df_old_arrays.groupBy("documentId").count().collect()
-        old_counts_dict = {str(row.documentId): row["count"] for row in old_counts_by_doc}
+        old_counts_dict = {row.documentId: row["count"] for row in old_counts_by_doc}
         
         # Capture full records for Complete mode
         old_records_by_doc = {}
         for row in df_old_arrays.collect():
-            doc_id = str(row.documentId)
+            doc_id = row.documentId
             if doc_id not in old_records_by_doc:
                 old_records_by_doc[doc_id] = []
             old_records_by_doc[doc_id].append(row.asDict())
@@ -632,18 +595,13 @@ for array_type, table_config in ARRAY_TABLES.items():
     for doc_id in changed_ids:
         if table_name not in array_changes_by_doc.get(doc_id, {}):
             array_changes_by_doc[doc_id][table_name] = {
-                "old_count": old_counts_dict.get(str(doc_id), 0),
+                "old_count": old_counts_dict.get(doc_id, 0),
                 "new_count": 0,  # Will be updated after insert
-                "old_records": old_records_by_doc.get(str(doc_id), []),
+                "old_records": old_records_by_doc.get(doc_id, []),
                 "new_records": []  # Will be updated after insert
             }
     
     if records:
-        array_document_id_type = (
-            spark.table(table_name).schema["documentId"].dataType
-            if spark.catalog.tableExists(table_name)
-            else df_to_flatten.schema["documentId"].dataType
-        )
         # STEP 1: Collect ALL unique keys across ALL records for this table
         all_keys = set()
         for record in records:
@@ -660,7 +618,7 @@ for array_type, table_config in ARRAY_TABLES.items():
             for key in all_keys:
                 val = record.get(key)
                 if key == "documentId":
-                    normalized[key] = normalize_document_id(val, array_document_id_type)
+                    normalized[key] = str(val) if val is not None else None
                 elif key == "array_index":
                     try:
                         normalized[key] = int(val) if val is not None else None
@@ -675,7 +633,7 @@ for array_type, table_config in ARRAY_TABLES.items():
         schema_fields = []
         for key in all_keys:
             if key == "documentId":
-                schema_fields.append(T.StructField(key, array_document_id_type, False))
+                schema_fields.append(T.StructField(key, T.StringType(), True))
             elif key == "array_index":
                 schema_fields.append(T.StructField(key, T.IntegerType(), True))
             else:
@@ -692,6 +650,7 @@ for array_type, table_config in ARRAY_TABLES.items():
                 f"[ERROR] {table_name}: found {null_array_index_count} rows with null array_index"
             )
 
+        df_array = df_array.withColumn("documentId", F.col("documentId").cast(T.StringType()))
         df_array = df_array.withColumn("array_index", F.col("array_index").cast(T.IntegerType()))
         
         df_array = df_array.withColumn(
@@ -701,7 +660,7 @@ for array_type, table_config in ARRAY_TABLES.items():
         df_array = df_array.withColumn("processed_at", F.current_timestamp())
 
         df_array = align_to_table(df_array, table_name)
-        doc_ids_str = ",".join("'" + str(doc_id).replace("'", "''") + "'" for doc_id in changed_ids)
+        doc_ids_str = ",".join("'" + doc_id.replace("'", "''") + "'" for doc_id in changed_ids)
         df_array.write.format("delta").mode("overwrite") \
             .option("replaceWhere", f"documentId IN ({doc_ids_str})") \
             .option("mergeSchema", "true").saveAsTable(table_name)
@@ -709,12 +668,12 @@ for array_type, table_config in ARRAY_TABLES.items():
         
         # CAPTURE "AFTER" STATE: Update new counts + full records for CDC tracking
         new_counts_by_doc = df_array.groupBy("documentId").count().collect()
-        new_counts_dict = {str(row.documentId): row["count"] for row in new_counts_by_doc}
+        new_counts_dict = {row.documentId: row["count"] for row in new_counts_by_doc}
         
         # Capture full new records for Complete mode
         new_records_by_doc = {}
         for row in df_array.collect():
-            doc_id = str(row.documentId)
+            doc_id = row.documentId
             if doc_id not in new_records_by_doc:
                 new_records_by_doc[doc_id] = []
             new_records_by_doc[doc_id].append(row.asDict())
@@ -722,12 +681,12 @@ for array_type, table_config in ARRAY_TABLES.items():
         # Update tracking dictionary
         for doc_id in changed_ids:
             if table_name in array_changes_by_doc.get(doc_id, {}):
-                array_changes_by_doc[doc_id][table_name]["new_count"] = new_counts_dict.get(str(doc_id), 0)
-                array_changes_by_doc[doc_id][table_name]["new_records"] = new_records_by_doc.get(str(doc_id), [])
+                array_changes_by_doc[doc_id][table_name]["new_count"] = new_counts_dict.get(doc_id, 0)
+                array_changes_by_doc[doc_id][table_name]["new_records"] = new_records_by_doc.get(doc_id, [])
         
         print(f"  ✓ {table_name}: {len(records)} rows, {len(df_array.columns)} columns [{write_mode}]")
     elif spark.catalog.tableExists(table_name):
-        doc_ids_str = ",".join("'" + str(doc_id).replace("'", "''") + "'" for doc_id in changed_ids)
+        doc_ids_str = ",".join("'" + doc_id.replace("'", "''") + "'" for doc_id in changed_ids)
         spark.sql(f"DELETE FROM {table_name} WHERE documentId IN ({doc_ids_str})")
 
 print(f"[INFO] Array tables updated")
@@ -809,14 +768,11 @@ print(f"  Using before-state captured in STEP 4B (INSERTs: {len(inserts_set)}, U
 # Create df_silver_cdc with op_type for CDC logging
 cdc_records = []
 for doc_id in inserts_set:
-    cdc_records.append({"documentId": cdc_document_ids[doc_id], "op_type": "insert"})
+    cdc_records.append({"documentId": doc_id, "op_type": "insert"})
 for doc_id in updates_set:
-    cdc_records.append({"documentId": cdc_document_ids[doc_id], "op_type": "update"})
+    cdc_records.append({"documentId": doc_id, "op_type": "update"})
 
-df_silver_cdc = spark.createDataFrame(cdc_records, schema=T.StructType([
-    T.StructField("documentId", cdc_document_id_type, False),
-    T.StructField("op_type", T.StringType(), False),
-]))
+df_silver_cdc = spark.createDataFrame(cdc_records, schema="documentId STRING, op_type STRING")
 
 # Use the records captured in STEP 4B (BEFORE any transformations)
 old_records = old_records_for_cdc  # Captured from Silver table before merge
@@ -992,11 +948,8 @@ for doc_id in changed_ids:
 
 # Create descriptions DataFrame
 df_descriptions = spark.createDataFrame(
-    [(cdc_document_ids[doc_id], desc) for doc_id, desc in change_descriptions.items()],
-    schema=T.StructType([
-        T.StructField("documentId", cdc_document_id_type, False),
-        T.StructField("change_description", T.StringType(), False),
-    ])
+    [(doc_id, desc) for doc_id, desc in change_descriptions.items()],
+    schema="documentId STRING, change_description STRING"
 )
 
 # Join descriptions to CDC records
@@ -1054,8 +1007,27 @@ if spark.catalog.tableExists(TABLE_SILVER_CONTENT_HASH):
 else:
     df_new_hashes.write.format("delta").saveAsTable(TABLE_SILVER_CONTENT_HASH)
 
-new_watermark = max_processed_timestamp
-print(f"[INFO] Using captured MAX sync_timestamp from processed records: {new_watermark}")
+# CRITICAL FIX: Use MAX timestamp from Bronze records we ACTUALLY PROCESSED
+# Why: Bronze may write records with old timestamps (e.g., during reprocessing).
+# If we use "now" as watermark, we'll skip those old-timestamped records on next run.
+# Solution: Use the MAX sync_timestamp from the records we flattened.
+
+if truly_changed_count > 0:
+    # Get the maximum sync_timestamp from records we processed
+    max_processed_timestamp = df_to_flatten.agg(
+        F.date_format(F.max("sync_timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+    ).first()[0]
+    
+    if max_processed_timestamp:
+        # Use the max timestamp we processed as watermark
+        new_watermark = max_processed_timestamp
+        print(f"[INFO] Using MAX sync_timestamp from processed records: {new_watermark}")
+    else:
+        raise ValueError("No processed sync_timestamp; refusing to advance Silver state")
+else:
+    # No records processed, keep existing watermark
+    new_watermark = last_watermark
+    print(f"[INFO] No records processed, keeping existing watermark: {new_watermark}")
 
 df_new_state = spark.createDataFrame(
     [(int(spark.table(TABLE_SILVER_MAIN).count()), new_watermark, "incremental")],

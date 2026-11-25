@@ -8,13 +8,12 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
+# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
-# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
+# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
 # META         }
 # META       ]
 # META     }
@@ -130,36 +129,6 @@ def to_api_utc_millis(dt):
     dt_utc = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     dt_utc = dt_utc.astimezone(timezone.utc)
     return dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def align_cdc_document_ids(df, table_name):
-    """Match legacy numeric CDC keys without silently changing identifier values."""
-    if not spark.catalog.tableExists(table_name):
-        return df
-    target_type = spark.table(table_name).schema["documentId"].dataType
-    source_type = df.schema["documentId"].dataType
-    if source_type == target_type:
-        return df
-    if not isinstance(source_type, T.StringType) or not isinstance(
-        target_type, (T.ByteType, T.ShortType, T.IntegerType, T.LongType)
-    ):
-        raise TypeError(
-            f"{table_name}.documentId: cannot safely align "
-            f"{source_type.simpleString()} to {target_type.simpleString()}"
-        )
-    converted_id = F.col("documentId").cast(target_type)
-    invalid_ids = df.filter(
-        F.col("documentId").isNull()
-        | converted_id.isNull()
-        | (converted_id.cast("string") != F.col("documentId"))
-    )
-    if invalid_ids.limit(1).count():
-        raise ValueError(
-            f"{table_name}.documentId: IDs cannot be represented losslessly as "
-            f"{target_type.simpleString()}; explicit migration required"
-        )
-    return df.withColumn("documentId", converted_id)
-
 
 # Get last watermarks, retaining support for the legacy single-watermark schema.
 watermark_df = spark.table(TABLE_STATE)
@@ -461,7 +430,7 @@ print('='*60)
 
 if len(all_unique_ids) == 0:
     print('\n✅ No changes since last run. Exiting.')
-    # Silver independently checks for pending work even when Bronze has no new changes.
+    # Signal downstream pipeline activities to skip when the notebook output carries exitValue=no_changes.
     notebookutils.notebook.exit("no_changes")
 
 # Store results for watermark calculation later
@@ -534,11 +503,8 @@ df_raw.createOrReplaceTempView('staging_incremental')
 # CELL ********************
 
 # Determine op_type based on whether content actually changed
-# Pin the comparison snapshot so cache invalidation after MERGE cannot change CDC rows.
-bronze_version = spark.sql(f"DESCRIBE HISTORY {TABLE_FULL} LIMIT 1").first()["version"]
-existing_records = spark.sql(
-    f"SELECT documentId, content_hash FROM {TABLE_FULL} VERSION AS OF {bronze_version}"
-).cache()
+# Read existing records with their content hashes for comparison
+existing_records = spark.table(TABLE_FULL).select('documentId', 'content_hash').cache()
 if existing_records.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
     raise ValueError("Bronze target contains duplicate documentId values; repair before MERGE")
 
@@ -580,10 +546,6 @@ else:
     print(f'🔍 Change Analysis:')
     print(f'   No changes detected - all {df_raw.count()} incidents unchanged')
 
-# Validate CDC compatibility before committing changes to Bronze.
-if cdc_count > 0:
-    df_cdc = align_cdc_document_ids(df_tagged, TABLE_CDC)
-
 # Merge into Bronze table (MERGE mode for idempotency)
 print(f'\n🔄 Merging into {TABLE_FULL}...')
 
@@ -603,6 +565,8 @@ print(f'✅ Merge completed')
 
 # Append to CDC log (only if there were actual changes)
 if cdc_count > 0:
+    df_cdc = df_tagged
+
     # Diagnostic: Verify op_type distribution BEFORE writing
     op_type_counts = df_cdc.groupBy('op_type').count().collect()
     print(f'\n📊 CDC DataFrame op_type distribution (BEFORE write):')
@@ -696,9 +660,9 @@ df_state.write \
 
 print(f'✅ State table updated with dual watermarks')
 
-# Report Bronze status; downstream Silver independently checks for pending work.
+# Signal downstream pipeline to skip if no changes detected
 if cdc_count == 0:
-    print(f'\n[INFO] No new Bronze changes; Silver must check for pending work')
+    print(f'\n🚫 Signaling downstream: no_changes (Silver notebook should skip)')
     notebookutils.notebook.exit("no_changes")
 
 print(f'\n✅ Incremental sync completed with {cdc_count} changes')
