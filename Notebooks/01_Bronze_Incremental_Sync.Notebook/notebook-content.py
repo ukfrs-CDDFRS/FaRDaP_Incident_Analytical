@@ -534,11 +534,8 @@ df_raw.createOrReplaceTempView('staging_incremental')
 # CELL ********************
 
 # Determine op_type based on whether content actually changed
-# Pin the comparison snapshot so cache invalidation after MERGE cannot change CDC rows.
-bronze_version = spark.sql(f"DESCRIBE HISTORY {TABLE_FULL} LIMIT 1").first()["version"]
-existing_records = spark.sql(
-    f"SELECT documentId, content_hash FROM {TABLE_FULL} VERSION AS OF {bronze_version}"
-).cache()
+# Read existing records with their content hashes for comparison
+existing_records = spark.table(TABLE_FULL).select('documentId', 'content_hash').cache()
 if existing_records.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
     raise ValueError("Bronze target contains duplicate documentId values; repair before MERGE")
 

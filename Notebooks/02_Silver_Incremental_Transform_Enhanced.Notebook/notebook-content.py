@@ -250,13 +250,6 @@ if df_to_flatten.filter(
 if df_to_flatten.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
     raise ValueError("Changed Bronze records contain duplicate documentId values")
 
-# Hash writes can invalidate this DataFrame's cache and remove its changed rows.
-max_processed_timestamp = df_to_flatten.agg(
-    F.date_format(F.max("sync_timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
-).first()[0]
-if not max_processed_timestamp:
-    raise ValueError("No processed sync_timestamp; refusing to advance Silver state")
-
 print(f"\n[INFO] Will flatten {truly_changed_count} records with changed JSON")
 
 # METADATA ********************
@@ -1054,8 +1047,27 @@ if spark.catalog.tableExists(TABLE_SILVER_CONTENT_HASH):
 else:
     df_new_hashes.write.format("delta").saveAsTable(TABLE_SILVER_CONTENT_HASH)
 
-new_watermark = max_processed_timestamp
-print(f"[INFO] Using captured MAX sync_timestamp from processed records: {new_watermark}")
+# CRITICAL FIX: Use MAX timestamp from Bronze records we ACTUALLY PROCESSED
+# Why: Bronze may write records with old timestamps (e.g., during reprocessing).
+# If we use "now" as watermark, we'll skip those old-timestamped records on next run.
+# Solution: Use the MAX sync_timestamp from the records we flattened.
+
+if truly_changed_count > 0:
+    # Get the maximum sync_timestamp from records we processed
+    max_processed_timestamp = df_to_flatten.agg(
+        F.date_format(F.max("sync_timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+    ).first()[0]
+    
+    if max_processed_timestamp:
+        # Use the max timestamp we processed as watermark
+        new_watermark = max_processed_timestamp
+        print(f"[INFO] Using MAX sync_timestamp from processed records: {new_watermark}")
+    else:
+        raise ValueError("No processed sync_timestamp; refusing to advance Silver state")
+else:
+    # No records processed, keep existing watermark
+    new_watermark = last_watermark
+    print(f"[INFO] No records processed, keeping existing watermark: {new_watermark}")
 
 df_new_state = spark.createDataFrame(
     [(int(spark.table(TABLE_SILVER_MAIN).count()), new_watermark, "incremental")],

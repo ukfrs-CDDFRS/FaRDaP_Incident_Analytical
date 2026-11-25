@@ -32,13 +32,6 @@ Bronze MERGE, the notebook aligns CDC identifiers to the existing integral colum
 type and rejects null, overflowing, or lossy conversions. It does not overwrite
 the CDC table or enable schema evolution to change key types.
 
-Bronze incremental captures the current Delta version before classifying changes
-and reads existing hashes with `VERSION AS OF` that version. CDC recomputation
-therefore retains the original insert/update classification even if the Bronze
-MERGE invalidates Spark caches. This uses the existing Delta snapshot rather than
-an executor-local checkpoint; normal Delta history and file retention must remain
-available for the duration of the run.
-
 If a pipeline run fails at the CDC append **after** the Bronze MERGE, do not
 assume rerunning the pipeline will restore the missing CDC entries: the content
 hashes already match, so those records can be classified as unchanged. Preserve
@@ -66,12 +59,6 @@ hash tracking to decide whether work remains. This allows a failed Silver batch
 to be retried without waiting for another Bronze change. This does not make
 multi-table writes transactional: after a partial Silver commit, historical CDC
 before-images may require recovery from Delta history.
-
-Silver captures and validates the processed batch's maximum `sync_timestamp`
-before any Silver writes, then publishes that saved value after CDC and hash
-tracking succeed. It does not recompute the watermark after the hash MERGE:
-that write can invalidate the cached change filter and leave it with no rows.
-A missing processed timestamp still fails before any Silver tables are changed.
 
 The CDC tracking happens automatically during the Silver incremental transform:
 
