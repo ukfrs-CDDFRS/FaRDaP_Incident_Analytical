@@ -3,6 +3,7 @@
   "schedules": [
     {
       "enabled": true,
+      "enabledControlType": "UserEnabled",
       "jobType": "Execute",
       "configuration": {
         "type": "Cron",

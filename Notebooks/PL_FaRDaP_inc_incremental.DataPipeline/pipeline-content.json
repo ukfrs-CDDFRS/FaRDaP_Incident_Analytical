@@ -61,6 +61,36 @@
               "onInactiveMarkAs": "Succeeded",
               "dependsOn": [
                 {
+                  "activity": "02_Silver_Incremental_Transform_Enhanced_copy1",
+                  "dependencyConditions": [
+                    "Succeeded"
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "TridentNotebook",
+              "typeProperties": {
+                "notebookId": "79a1cf46-3da7-830e-40ac-42c6e1481b4d",
+                "workspaceId": "00000000-0000-0000-0000-000000000000",
+                "parameters": {
+                  "reprocess_all": {
+                    "value": false,
+                    "type": "bool"
+                  }
+                },
+                "sessionTag": "inc_fardap_session_tag"
+              },
+              "policy": {
+                "timeout": "0.12:00:00",
+                "retry": 0,
+                "retryIntervalInSeconds": 30,
+                "secureInput": false,
+                "secureOutput": false
+              },
+              "name": "02_Silver_Incremental_Transform_Enhanced_copy1",
+              "dependsOn": [
+                {
                   "activity": "02_Silver_Incremental_Transform_Enhanced",
                   "dependencyConditions": [
                     "Succeeded"

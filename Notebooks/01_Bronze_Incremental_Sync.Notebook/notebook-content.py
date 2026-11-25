@@ -461,7 +461,7 @@ print('='*60)
 
 if len(all_unique_ids) == 0:
     print('\n✅ No changes since last run. Exiting.')
-    # Signal downstream pipeline activities to skip when the notebook output carries exitValue=no_changes.
+    # Silver independently checks for pending work even when Bronze has no new changes.
     notebookutils.notebook.exit("no_changes")
 
 # Store results for watermark calculation later
@@ -534,8 +534,11 @@ df_raw.createOrReplaceTempView('staging_incremental')
 # CELL ********************
 
 # Determine op_type based on whether content actually changed
-# Read existing records with their content hashes for comparison
-existing_records = spark.table(TABLE_FULL).select('documentId', 'content_hash').cache()
+# Pin the comparison snapshot so cache invalidation after MERGE cannot change CDC rows.
+bronze_version = spark.sql(f"DESCRIBE HISTORY {TABLE_FULL} LIMIT 1").first()["version"]
+existing_records = spark.sql(
+    f"SELECT documentId, content_hash FROM {TABLE_FULL} VERSION AS OF {bronze_version}"
+).cache()
 if existing_records.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
     raise ValueError("Bronze target contains duplicate documentId values; repair before MERGE")
 
@@ -693,9 +696,9 @@ df_state.write \
 
 print(f'✅ State table updated with dual watermarks')
 
-# Signal downstream pipeline to skip if no changes detected
+# Report Bronze status; downstream Silver independently checks for pending work.
 if cdc_count == 0:
-    print(f'\n🚫 Signaling downstream: no_changes (Silver notebook should skip)')
+    print(f'\n[INFO] No new Bronze changes; Silver must check for pending work')
     notebookutils.notebook.exit("no_changes")
 
 print(f'\n✅ Incremental sync completed with {cdc_count} changes')
