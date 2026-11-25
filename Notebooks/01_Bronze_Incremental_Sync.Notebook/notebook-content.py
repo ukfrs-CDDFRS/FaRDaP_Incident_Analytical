@@ -8,12 +8,13 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
+# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
+# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
+# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
 # META         }
 # META       ]
 # META     }
@@ -105,29 +106,23 @@ import json
 import time
 import random
 import threading
-import pandas as pd
 from datetime import datetime, timezone, timedelta
-from pyspark.sql import functions as F
+from pyspark.sql import functions as F, types as T
+
+spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 
 def parse_api_datetime(value):
-    """Parse API/state timestamps into timezone-aware UTC datetimes."""
+    """Parse optional API timestamps, rejecting malformed non-null values."""
     if value is None:
         return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
-        iso = value.strip()
-        if not iso:
-            return None
-        if iso.endswith("Z"):
-            iso = iso[:-1] + "+00:00"
-        try:
-            dt = datetime.fromisoformat(iso)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            return None
-    return None
+        value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if not isinstance(value, datetime):
+        raise TypeError(f"Expected an ISO timestamp or datetime, got {type(value).__name__}")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def to_api_utc_millis(dt):
@@ -136,104 +131,24 @@ def to_api_utc_millis(dt):
     dt_utc = dt_utc.astimezone(timezone.utc)
     return dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
-# Get last watermarks (dual-watermark schema)
-DEFAULT_LOOKBACK_MINUTES = 5
-
-try:
-    watermark_df = spark.table(TABLE_STATE)
-    
-    # Check if table has dual-watermark schema
-    columns = watermark_df.columns
-    has_dual_watermarks = "last_watermark_territory" in columns and "last_watermark_responsible" in columns
-    
-    if has_dual_watermarks:
-        # Dual-watermark schema (post-migration)
-        rows = (
-            watermark_df
-            .select("last_watermark_territory", "last_watermark_responsible")
-            .limit(1)
-            .collect()
-        )
-        
-        if not rows:
-            TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-            RESPONSIBLE_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-            print("📍 No watermarks found, using 5-minute lookback for both")
-        else:
-            # Parse territory watermark
-            territory_value = rows[0]["last_watermark_territory"]
-            if territory_value is None:
-                TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-                print("⚠️  Territory watermark is NULL, using 5-minute lookback")
-            else:
-                if isinstance(territory_value, str):
-                    iso = territory_value.strip()
-                    if iso.endswith("Z"):
-                        iso = iso[:-1] + "+00:00"
-                    TERRITORY_FROM_DT = datetime.fromisoformat(iso)
-                    if TERRITORY_FROM_DT.tzinfo is None:
-                        TERRITORY_FROM_DT = TERRITORY_FROM_DT.replace(tzinfo=timezone.utc)
-                else:
-                    TERRITORY_FROM_DT = territory_value if territory_value.tzinfo else territory_value.replace(tzinfo=timezone.utc)
-                print(f"📍 Territory watermark: {TERRITORY_FROM_DT}")
-            
-            # Parse responsible watermark
-            responsible_value = rows[0]["last_watermark_responsible"]
-            if responsible_value is None:
-                RESPONSIBLE_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-                print("⚠️  Responsible watermark is NULL, using 5-minute lookback")
-            else:
-                if isinstance(responsible_value, str):
-                    iso = responsible_value.strip()
-                    if iso.endswith("Z"):
-                        iso = iso[:-1] + "+00:00"
-                    RESPONSIBLE_FROM_DT = datetime.fromisoformat(iso)
-                    if RESPONSIBLE_FROM_DT.tzinfo is None:
-                        RESPONSIBLE_FROM_DT = RESPONSIBLE_FROM_DT.replace(tzinfo=timezone.utc)
-                else:
-                    RESPONSIBLE_FROM_DT = responsible_value if responsible_value.tzinfo else responsible_value.replace(tzinfo=timezone.utc)
-                print(f"📍 Responsible watermark: {RESPONSIBLE_FROM_DT}")
-    
-    else:
-        # Legacy single-watermark schema (pre-migration)
-        print("⚠️  WARNING: Single-watermark schema detected!")
-        print("   Please run migration notebook: Supporting_Scripts/00_Migrate_State_Table")
-        print("   Falling back to single watermark for both searches...")
-        
-        rows = (
-            watermark_df
-            .select("last_watermark")
-            .orderBy(F.col("last_watermark").desc())
-            .limit(1)
-            .collect()
-        )
-
-        if not rows or rows[0][0] is None:
-            TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-            RESPONSIBLE_FROM_DT = TERRITORY_FROM_DT
-            print("📍 No watermark found, using 5-minute lookback")
-        else:
-            value = rows[0][0]
-            if isinstance(value, str):
-                iso = value.strip()
-                if iso.endswith("Z"):
-                    iso = iso[:-1] + "+00:00"
-                UPDATED_FROM_DT = datetime.fromisoformat(iso)
-                if UPDATED_FROM_DT.tzinfo is None:
-                    UPDATED_FROM_DT = UPDATED_FROM_DT.replace(tzinfo=timezone.utc)
-            else:
-                UPDATED_FROM_DT = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-            
-            # Use same watermark for both (legacy behavior)
-            TERRITORY_FROM_DT = UPDATED_FROM_DT
-            RESPONSIBLE_FROM_DT = UPDATED_FROM_DT
-            print(f"📍 Using single watermark for both: {UPDATED_FROM_DT}")
-
-except Exception as e:
-    print(f"⚠️  Could not read state table: {e}")
-    TERRITORY_FROM_DT = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_LOOKBACK_MINUTES)
-    RESPONSIBLE_FROM_DT = TERRITORY_FROM_DT
-    print("📍 Using 5-minute lookback for both")
+# Get last watermarks, retaining support for the legacy single-watermark schema.
+watermark_df = spark.table(TABLE_STATE)
+has_dual_watermarks = {
+    "last_watermark_territory", "last_watermark_responsible"
+}.issubset(watermark_df.columns)
+watermark_columns = (
+    ["last_watermark_territory", "last_watermark_responsible"]
+    if has_dual_watermarks else ["last_watermark"]
+)
+rows = watermark_df.select(*watermark_columns).limit(2).collect()
+if len(rows) != 1:
+    raise ValueError("Expected one Bronze state row; run full load or repair state before syncing")
+TERRITORY_FROM_DT = parse_api_datetime(rows[0][watermark_columns[0]])
+RESPONSIBLE_FROM_DT = parse_api_datetime(rows[0][watermark_columns[-1]])
+if TERRITORY_FROM_DT is None or RESPONSIBLE_FROM_DT is None:
+    raise ValueError("Bronze watermarks cannot be null; run full load or repair state before syncing")
+if not has_dual_watermarks:
+    print("[WARN] Using legacy single watermark for both searches")
 
 # Convert to API format
 TERRITORY_FROM = to_api_utc_millis(TERRITORY_FROM_DT)
@@ -555,10 +470,22 @@ print(f'\n✅ Fetch complete: {len(results):,} / {len(all_unique_ids):,} documen
 
 # CELL ********************
 
-# Build DataFrame
-df_raw = spark.createDataFrame(pd.DataFrame(results))
-df_raw = df_raw.withColumn('sync_timestamp', F.col('sync_timestamp').cast('timestamp'))
-df_raw = df_raw.withColumn('change_ts', F.col('change_ts').cast('timestamp'))
+# Build DataFrame without pandas/Arrow inference (change_ts may be entirely null).
+if len(results) != len(all_unique_ids):
+    raise RuntimeError("Incomplete fetch; refusing to write data or advance watermarks")
+raw_schema = T.StructType([
+    T.StructField("documentId", T.StringType(), False),
+    T.StructField("raw_json", T.StringType(), False),
+    T.StructField("sync_timestamp", T.TimestampType(), False),
+    T.StructField("change_ts", T.TimestampType(), True),
+])
+raw_records = [
+    {**record,
+     "sync_timestamp": parse_api_datetime(record["sync_timestamp"]),
+     "change_ts": parse_api_datetime(record["change_ts"])}
+    for record in results
+]
+df_raw = spark.createDataFrame(raw_records, schema=raw_schema)
 df_raw = df_raw.withColumn('content_hash', F.sha2(F.col('raw_json'), 256))
 
 print(f'📊 Created DataFrame with {df_raw.count():,} rows')
@@ -579,6 +506,8 @@ df_raw.createOrReplaceTempView('staging_incremental')
 # Determine op_type based on whether content actually changed
 # Read existing records with their content hashes for comparison
 existing_records = spark.table(TABLE_FULL).select('documentId', 'content_hash').cache()
+if existing_records.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
+    raise ValueError("Bronze target contains duplicate documentId values; repair before MERGE")
 
 # Find truly new records (not in table at all)
 new_records = df_raw.join(existing_records, on='documentId', how='left_anti') \
@@ -588,7 +517,7 @@ new_records = df_raw.join(existing_records, on='documentId', how='left_anti') \
 # Find records that exist but have different content_hash (true updates)
 updated_records = df_raw.alias('new') \
     .join(existing_records.alias('old'), on='documentId', how='inner') \
-    .where(F.col('new.content_hash') != F.col('old.content_hash')) \
+    .where(~F.col('new.content_hash').eqNullSafe(F.col('old.content_hash'))) \
     .select(
         F.col('new.documentId'),
         F.lit('update').alias('op_type'),
@@ -597,15 +526,13 @@ updated_records = df_raw.alias('new') \
     )
 
 # Only track actual changes in CDC
-df_tagged = new_records.unionByName(updated_records)
+df_tagged = new_records.unionByName(updated_records).persist()
 
-# Cache only if there are changes
+# Materialize change classification before MERGE changes the source table.
 cdc_count = df_tagged.count()
 unchanged_count = df_raw.count() - cdc_count
 
 if cdc_count > 0:
-    df_tagged.cache()
-    
     # Diagnostic: Show breakdown of changes
     op_type_breakdown = df_tagged.groupBy('op_type').count().collect()
     print(f'🔍 Change Analysis:')
@@ -627,10 +554,12 @@ spark.sql(f'''
 MERGE INTO {TABLE_FULL} t
 USING staging_incremental s
 ON t.documentId = s.documentId
-WHEN MATCHED AND t.content_hash <> s.content_hash THEN
-  UPDATE SET *
+WHEN MATCHED AND NOT (t.content_hash <=> s.content_hash) THEN
+  UPDATE SET raw_json = s.raw_json, sync_timestamp = s.sync_timestamp,
+             change_ts = s.change_ts, content_hash = s.content_hash
 WHEN NOT MATCHED THEN
-  INSERT *
+  INSERT (documentId, raw_json, sync_timestamp, change_ts, content_hash)
+  VALUES (s.documentId, s.raw_json, s.sync_timestamp, s.change_ts, s.content_hash)
 ''')
 
 print(f'✅ Merge completed')
@@ -649,7 +578,6 @@ if cdc_count > 0:
     df_cdc.write \
         .format('delta') \
         .mode('append') \
-        .option('mergeSchema', 'true') \
         .saveAsTable(TABLE_CDC)
 
     print(f'✅ CDC log appended')
@@ -662,6 +590,9 @@ if cdc_count > 0:
         print(f'   {row.op_type}: {row["count"]}')
 else:
     print(f'\n✅ No changes detected - CDC log unchanged')
+
+df_tagged.unpersist()
+existing_records.unpersist()
 
 # METADATA ********************
 
@@ -707,8 +638,8 @@ else:
 # For backwards compatibility, set last_watermark to the max of both
 # (deprecated column, but kept to avoid breaking downstream code)
 max_watermark_dt = max(
-    filter(None, [territory_watermark_dt, responsible_watermark_dt]),
-    default=datetime.now(timezone.utc)
+    parse_api_datetime(territory_watermark_str),
+    parse_api_datetime(responsible_watermark_str)
 )
 legacy_watermark_str = to_api_utc_millis(max_watermark_dt)
 
@@ -725,6 +656,7 @@ print(f'   (last_watermark={legacy_watermark_str} for backwards compatibility)')
 df_state.write \
     .format('delta') \
     .mode('overwrite') \
+    .option('overwriteSchema', 'true') \
     .saveAsTable(TABLE_STATE)
 
 print(f'✅ State table updated with dual watermarks')
@@ -757,7 +689,7 @@ print(f'   Total rows: {df_full.count():,}')
 df_cdc_check = spark.table(TABLE_CDC)
 print(f'\n✅ {TABLE_CDC}:')
 print(f'   Total rows: {df_cdc_check.count():,}')
-print(f'   This run: +{df_cdc.count():,} records')
+print(f'   This run: +{cdc_count:,} records')
 cdc_summary = df_cdc_check.groupBy("op_type").count().collect()
 for row in cdc_summary:
     print(f'      {row["op_type"]}: {row["count"]:,}')

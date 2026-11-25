@@ -8,12 +8,13 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
+# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
+# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
+# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
 # META         }
 # META       ]
 # META     }
@@ -97,9 +98,23 @@ import json
 import time
 import random
 import threading
-import pandas as pd
 from datetime import datetime, timezone, timedelta
-from pyspark.sql import functions as F
+from pyspark.sql import functions as F, types as T
+
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+
+
+def parse_api_datetime(value):
+    """Parse optional API timestamps, rejecting malformed non-null values."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    if not isinstance(value, datetime):
+        raise TypeError(f"Expected an ISO timestamp or datetime, got {type(value).__name__}")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 # Authentication and session helpers
 token_lock = threading.Lock()
@@ -396,12 +411,22 @@ assert len(results) > 0, '❌ No documents retrieved; aborting write'
 
 # CELL ********************
 
-# Build DataFrame and prepare for write
-from pyspark.sql.types import StructType, StructField, StringType
-
-df_raw = spark.createDataFrame(pd.DataFrame(results))
-df_raw = df_raw.withColumn('sync_timestamp', F.col('sync_timestamp').cast('timestamp'))
-df_raw = df_raw.withColumn('change_ts', F.col('change_ts').cast('timestamp'))
+# Build DataFrame without pandas/Arrow inference (change_ts may be entirely null).
+if len(results) != len(all_unique_ids):
+    raise RuntimeError("Incomplete fetch; refusing to write data or advance watermarks")
+raw_schema = T.StructType([
+    T.StructField("documentId", T.StringType(), False),
+    T.StructField("raw_json", T.StringType(), False),
+    T.StructField("sync_timestamp", T.TimestampType(), False),
+    T.StructField("change_ts", T.TimestampType(), True),
+])
+raw_records = [
+    {**record,
+     "sync_timestamp": parse_api_datetime(record["sync_timestamp"]),
+     "change_ts": parse_api_datetime(record["change_ts"])}
+    for record in results
+]
+df_raw = spark.createDataFrame(raw_records, schema=raw_schema)
 
 # Add content hash for change detection
 df_raw = df_raw.withColumn('content_hash', F.sha2(F.col('raw_json'), 256))
@@ -424,7 +449,7 @@ print(f'\n💾 Writing to {TABLE_FULL}...')
 df_raw.write \
     .format('delta') \
     .mode('overwrite') \
-    .option('mergeSchema', 'true') \
+    .option('overwriteSchema', 'true') \
     .saveAsTable(TABLE_FULL)
 
 print(f'✅ Wrote {df_raw.count():,} records to {TABLE_FULL}')
@@ -447,16 +472,12 @@ df_cdc.write \
 print(f'✅ Wrote {df_cdc.count():,} records to {TABLE_CDC}')
 
 # Create/update state table with dual watermarks
-watermark = df_raw.select(F.coalesce(F.col('change_ts'), F.col('sync_timestamp')).alias('ts')) \
-    .agg(F.max('ts')).collect()[0][0]
+watermark_str = df_raw.select(F.coalesce(F.col('change_ts'), F.col('sync_timestamp')).alias('ts')) \
+    .agg(F.date_format(F.max('ts'), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")).first()[0]
 
 # Standardise as ISO-8601 STRING for stable schema across full/incremental paths
-if watermark is None:
-    watermark_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-elif hasattr(watermark, 'strftime'):
-    watermark_str = watermark.strftime("%Y-%m-%dT%H:%M:%SZ")
-else:
-    watermark_str = str(watermark)
+if watermark_str is None:
+    raise ValueError("No valid Bronze watermark; refusing to advance state")
 
 # Create state table with dual watermarks
 # Initialize both territory and responsible watermarks to the same value

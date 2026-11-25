@@ -8,12 +8,13 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
+# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
+# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
+# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
 # META         }
 # META       ]
 # META     }
@@ -49,6 +50,40 @@ from pyspark.sql.window import Window
 import json
 from datetime import datetime
 
+spark.conf.set("spark.sql.session.timeZone", "UTC")
+
+
+def align_to_table(df, table_name):
+    """Preserve existing types and columns without silently coercing payloads."""
+    if not spark.catalog.tableExists(table_name):
+        return df
+    target_schema = spark.table(table_name).schema
+    source_types = {field.name: field.dataType for field in df.schema.fields}
+    for field in target_schema.fields:
+        if field.name not in source_types:
+            df = df.withColumn(field.name, F.lit(None).cast(field.dataType))
+        elif source_types[field.name] != field.dataType:
+            raise TypeError(
+                f"{table_name}.{field.name}: expected {field.dataType.simpleString()}, "
+                f"received {source_types[field.name].simpleString()}; explicit migration required"
+            )
+    return df
+
+
+def array_content_json(records):
+    """Compare/serialize payloads without volatile processing metadata."""
+    payloads = [
+        {key: value for key, value in record.items() if key not in ("processed_at", "array_id")}
+        for record in records
+    ]
+    return json.dumps(sorted(payloads, key=lambda record: record["array_index"]), sort_keys=True)
+
+
+def cdc_json_default(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"Unsupported CDC JSON value: {type(value).__name__}")
+
 # Get the Variable library
 vl = notebookutils.variableLibrary.getLibrary("var_library_fardap")
 
@@ -81,14 +116,14 @@ print(f"  CDC Description Mode: {CDC_DESCRIPTION_MODE}")
 # STEP 1: Read Last Flattening Watermark
 # ============================================================================
 
-try:
-    df_flatten_state = spark.table(TABLE_SILVER_FLATTEN_STATE)
-    last_watermark = df_flatten_state.select("last_watermark").collect()[0][0]
-    print(f"[INFO] Last flattening watermark: {last_watermark}")
-except Exception as e:
-    print(f"[ERROR] Flatten state table not found: {e}")
-    print(f"[INFO] Run full transform first (04_Silver_Full_Transform_Enhanced)")
-    notebookutils.notebook.exit("error: flatten_state_not_found")
+df_flatten_state = spark.table(TABLE_SILVER_FLATTEN_STATE)
+state_rows = df_flatten_state.select("last_watermark").limit(2).collect()
+if len(state_rows) != 1 or not state_rows[0]["last_watermark"]:
+    raise ValueError("Expected one valid Silver watermark; run full transform or repair state")
+last_watermark = state_rows[0]["last_watermark"]
+if spark.range(1).select(F.try_to_timestamp(F.lit(last_watermark))).first()[0] is None:
+    raise ValueError(f"Invalid Silver watermark: {last_watermark!r}")
+print(f"[INFO] Last flattening watermark: {last_watermark}")
 
 # METADATA ********************
 
@@ -102,10 +137,6 @@ except Exception as e:
 # ============================================================================
 # STEP 2: Get Changed DocumentIds + Filter by Content Hash
 # ============================================================================
-
-if not last_watermark:
-    last_watermark = "1970-01-01T00:00:00Z"
-    print("[WARN] last_watermark missing; defaulting to epoch")
 
 # ARCHITECTURE FIX: Read from Bronze MAIN table, not CDC log
 # Why: Bronze only appends to CDC when content_hash changes. If Bronze re-processes
@@ -163,8 +194,8 @@ if spark.catalog.tableExists(TABLE_SILVER_CONTENT_HASH):
         how="left"
     ).filter(
         # NEW record (no silver hash) OR content_hash changed
-        F.col("silver.content_hash").isNull() |
-        (F.col("bronze.content_hash") != F.col("silver.content_hash"))
+        F.col("silver.documentId").isNull() |
+        ~F.col("bronze.content_hash").eqNullSafe(F.col("silver.content_hash"))
     ).select(
         F.col("bronze.documentId"),
         F.col("bronze.raw_json"),
@@ -172,6 +203,7 @@ if spark.catalog.tableExists(TABLE_SILVER_CONTENT_HASH):
         F.col("bronze.sync_timestamp")
     )
 
+    df_to_flatten = df_to_flatten.persist()
     truly_changed_count = df_to_flatten.count()
     skipped_count = len(changed_ids) - truly_changed_count
 
@@ -182,13 +214,22 @@ if spark.catalog.tableExists(TABLE_SILVER_CONTENT_HASH):
 
     if truly_changed_count == 0:
         print("[INFO] No JSON content changes - exiting")
+        df_to_flatten.unpersist()
         notebookutils.notebook.exit("success: no_content_changes")
 
     changed_ids = [row.documentId for row in df_to_flatten.select("documentId").collect()]
 else:
     print(f"[WARN] Content hash table not found, flattening all changed records")
     df_to_flatten = df_bronze_changed
+    df_to_flatten = df_to_flatten.persist()
     truly_changed_count = df_to_flatten.count()
+
+if df_to_flatten.filter(
+    F.col("documentId").isNull() | F.col("sync_timestamp").isNull() | F.col("content_hash").isNull()
+).limit(1).count():
+    raise ValueError("Changed Bronze records have null keys, timestamps or hashes")
+if df_to_flatten.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
+    raise ValueError("Changed Bronze records contain duplicate documentId values")
 
 print(f"\n[INFO] Will flatten {truly_changed_count} records with changed JSON")
 
@@ -311,10 +352,7 @@ def extract_arrays_from_json(json_str, document_id, array_configs):
     ENHANCED: Now recursively flattens ALL nested structures within each array item.
     """
     arrays = {}
-    try:
-        content = json.loads(json_str)
-    except:
-        return arrays
+    content = json.loads(json_str)
     
     def find_arrays(obj, path=""):
         if isinstance(obj, dict):
@@ -345,9 +383,9 @@ def extract_arrays_from_json(json_str, document_id, array_configs):
     find_arrays(content)
     return arrays
 
-# Re-discover arrays from sample (to catch any NEW arrays added to API)
+# Inspect every changed document to catch rare or newly introduced arrays.
 ARRAY_TABLES = {}
-sample_jsons = df_to_flatten.select("raw_json").limit(20).collect()
+sample_jsons = df_to_flatten.select("raw_json").collect()
 for sample_row in sample_jsons:
     try:
         sample_content = json.loads(sample_row[0])
@@ -359,8 +397,16 @@ for sample_row in sample_jsons:
                 existing_fields = set(ARRAY_TABLES[array_name]['fields'])
                 new_fields = set(array_config['fields'])
                 ARRAY_TABLES[array_name]['fields'] = list(existing_fields | new_fields)
-    except:
-        continue
+    except (TypeError, ValueError) as e:
+        raise ValueError("Invalid Bronze JSON during array discovery") from e
+
+# Existing array tables must also be processed when an array becomes empty or disappears.
+for table in spark.catalog.listTables():
+    if table.name.startswith("fardap_silver_") and not table.isTemporary:
+        columns = spark.table(table.name).columns
+        if "documentId" in columns and "array_index" in columns:
+            if table.name not in {config["table_name"] for config in ARRAY_TABLES.values()}:
+                ARRAY_TABLES[table.name] = {"table_name": table.name, "fields": []}
 
 print(f"[INFO] Discovered {len(ARRAY_TABLES)} array types (includes any new arrays)")
 
@@ -402,7 +448,9 @@ df_silver_changed = df_flattened_changed.withColumn(
     "flattened_timestamp", F.current_timestamp()
 ).withColumn(
     "processed_at", F.current_timestamp()
-)
+).persist()
+df_silver_changed.count()
+df_silver_changed = align_to_table(df_silver_changed, TABLE_SILVER_MAIN)
 
 print(f"[INFO] Flattened {truly_changed_count} changed records")
 
@@ -431,6 +479,8 @@ print(f"  Captured {len(new_records_for_cdc)} NEW records (after flattening)")
 df_before_merge = spark.table(TABLE_SILVER_MAIN).filter(
     F.col("documentId").isin(changed_ids)
 )
+if df_before_merge.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
+    raise ValueError("Silver target contains duplicate documentId values; repair before MERGE")
 
 # Determine which records already exist (updates) vs new (inserts)
 existing_doc_ids_before_merge = set([row.documentId for row in df_before_merge.select("documentId").collect()])
@@ -463,12 +513,12 @@ else:
 # ============================================================================
 
 target_cols = spark.table(TABLE_SILVER_MAIN).columns
-
-for c in target_cols:
-    if c not in df_silver_changed.columns:
-        df_silver_changed = df_silver_changed.withColumn(c, F.lit(None))
-
-df_silver_changed = df_silver_changed.select(*target_cols)
+new_fields = [field for field in df_silver_changed.schema.fields if field.name not in target_cols]
+if new_fields:
+    additions = ", ".join(
+        f"`{field.name.replace('`', '``')}` {field.dataType.simpleString()}" for field in new_fields
+    )
+    spark.sql(f"ALTER TABLE {TABLE_SILVER_MAIN} ADD COLUMNS ({additions})")
 df_silver_changed.createOrReplaceTempView("staging_silver_changed")
 
 spark.sql(f"""
@@ -553,13 +603,6 @@ for array_type, table_config in ARRAY_TABLES.items():
             }
     
     if records:
-        # DELETE old arrays for these documentIds (only if table exists)
-        if spark.catalog.tableExists(table_name):
-            doc_ids_str = ",".join([f"'{d}'" for d in changed_ids])
-            spark.sql(f"DELETE FROM {table_name} WHERE documentId IN ({doc_ids_str})")
-        else:
-            print(f"  ℹ️  {table_name} not found; creating on insert")
-        
         # STEP 1: Collect ALL unique keys across ALL records for this table
         all_keys = set()
         for record in records:
@@ -617,43 +660,12 @@ for array_type, table_config in ARRAY_TABLES.items():
         )
         df_array = df_array.withColumn("processed_at", F.current_timestamp())
 
-        write_mode = "append"
-        try:
-            # Avoid blind schema merge. Auto-heal only on known Delta field conflict.
-            df_array.write.format("delta").mode("append").option("mergeSchema", "false").saveAsTable(table_name)
-        except Exception as e:
-            error_str = str(e)
-            # Check for schema mismatch errors (multiple error codes possible)
-            is_schema_mismatch = (
-                "DELTA_FAILED_TO_MERGE_FIELDS" in error_str or
-                "_LEGACY_ERROR_TEMP_DELTA_0007" in error_str or
-                "schema mismatch detected" in error_str.lower()
-            )
-            if not is_schema_mismatch:
-                raise
-
-            write_mode = "auto-heal-rebuild"
-            print(f"  [WARN] {table_name}: schema conflict detected; rebuilding table with aligned schema")
-
-            if spark.catalog.tableExists(table_name):
-                df_existing = spark.table(table_name)
-                if "documentId" in df_existing.columns:
-                    df_existing = df_existing.withColumn("documentId", F.col("documentId").cast(T.StringType()))
-                if "array_index" in df_existing.columns:
-                    df_existing = df_existing.withColumn("array_index", F.col("array_index").cast(T.IntegerType()))
-
-                target_cols = sorted(set(df_existing.columns) | set(df_array.columns))
-                for col_name in target_cols:
-                    if col_name not in df_existing.columns:
-                        df_existing = df_existing.withColumn(col_name, F.lit(None))
-                    if col_name not in df_array.columns:
-                        df_array = df_array.withColumn(col_name, F.lit(None))
-
-                df_rebuild = df_existing.select(*target_cols).unionByName(df_array.select(*target_cols))
-            else:
-                df_rebuild = df_array
-
-            df_rebuild.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(table_name)
+        df_array = align_to_table(df_array, table_name)
+        doc_ids_str = ",".join("'" + doc_id.replace("'", "''") + "'" for doc_id in changed_ids)
+        df_array.write.format("delta").mode("overwrite") \
+            .option("replaceWhere", f"documentId IN ({doc_ids_str})") \
+            .option("mergeSchema", "true").saveAsTable(table_name)
+        write_mode = "atomic-replace"
         
         # CAPTURE "AFTER" STATE: Update new counts + full records for CDC tracking
         new_counts_by_doc = df_array.groupBy("documentId").count().collect()
@@ -674,6 +686,9 @@ for array_type, table_config in ARRAY_TABLES.items():
                 array_changes_by_doc[doc_id][table_name]["new_records"] = new_records_by_doc.get(doc_id, [])
         
         print(f"  ✓ {table_name}: {len(records)} rows, {len(df_array.columns)} columns [{write_mode}]")
+    elif spark.catalog.tableExists(table_name):
+        doc_ids_str = ",".join("'" + doc_id.replace("'", "''") + "'" for doc_id in changed_ids)
+        spark.sql(f"DELETE FROM {table_name} WHERE documentId IN ({doc_ids_str})")
 
 print(f"[INFO] Array tables updated")
 
@@ -696,8 +711,8 @@ for doc_id in changed_ids:
             total_array_changes += 1
         # Check if content changed (same count)
         elif old_count > 0:
-            old_json = json.dumps(old_records, sort_keys=True)
-            new_json = json.dumps(new_records, sort_keys=True)
+            old_json = array_content_json(old_records)
+            new_json = array_content_json(new_records)
             if old_json != new_json:
                 array_type = table_name.replace("fardap_silver_", "")
                 doc_array_changes.append(f"{array_type}: {old_count} items (content changed)")
@@ -733,18 +748,7 @@ df_new_hashes = df_to_flatten.select(
     F.current_timestamp().alias("last_flattened_at")
 )
 
-df_new_hashes.createOrReplaceTempView("staging_content_hash")
-
-spark.sql(f"""
-MERGE INTO {TABLE_SILVER_CONTENT_HASH} t
-USING staging_content_hash s
-ON t.documentId = s.documentId
-WHEN MATCHED THEN UPDATE SET *
-WHEN NOT MATCHED THEN INSERT *
-""")
-
-print(f"[INFO] Updated {TABLE_SILVER_CONTENT_HASH}")
-print(f"[INFO] Tracked {truly_changed_count} new content_hash values")
+# Commit hashes only after CDC succeeds so a failed log write remains retryable.
 
 # METADATA ********************
 
@@ -866,8 +870,8 @@ for doc_id in changed_ids:
                 array_changed = True
             elif old_count > 0:  # Same count, but check if content changed
                 # Compare records (convert to JSON strings for comparison since records are dicts)
-                old_json = json.dumps(old_array_records, sort_keys=True)
-                new_json = json.dumps(new_array_records, sort_keys=True)
+                old_json = array_content_json(old_array_records)
+                new_json = array_content_json(new_array_records)
                 if old_json != new_json:
                     array_changed = True
             
@@ -931,7 +935,7 @@ for doc_id in changed_ids:
                         "new": array_data.get("new_records", [])
                     }
             
-            change_descriptions[doc_id] = json.dumps(changes_dict)
+            change_descriptions[doc_id] = json.dumps(changes_dict, default=cdc_json_default)
         
         else:
             # Fallback
@@ -954,15 +958,11 @@ df_silver_cdc = df_silver_cdc.join(
     df_descriptions,
     on="documentId",
     how="left"
-).withColumn("cdc_timestamp", F.current_timestamp())
+).withColumn("cdc_timestamp", F.current_timestamp()) \
+ .withColumn("flattened_at", F.current_timestamp())
 
 # Schema alignment: Ensure columns match existing table
-if spark.catalog.tableExists(TABLE_SILVER_CDC):
-    existing_cdc_schema = spark.table(TABLE_SILVER_CDC).schema
-    # Cast all columns to match existing schema
-    for field in existing_cdc_schema.fields:
-        if field.name in df_silver_cdc.columns:
-            df_silver_cdc = df_silver_cdc.withColumn(field.name, F.col(field.name).cast(field.dataType))
+df_silver_cdc = align_to_table(df_silver_cdc, TABLE_SILVER_CDC)
 
 df_silver_cdc.write.format("delta").mode("append").option("mergeSchema", "true").saveAsTable(TABLE_SILVER_CDC)
 
@@ -996,6 +996,18 @@ for row in written_op_types:
 # STEP 9: Update Flatten State
 # ============================================================================
 
+if spark.catalog.tableExists(TABLE_SILVER_CONTENT_HASH):
+    df_new_hashes.createOrReplaceTempView("staging_content_hash")
+    spark.sql(f"""
+    MERGE INTO {TABLE_SILVER_CONTENT_HASH} t
+    USING staging_content_hash s
+    ON t.documentId = s.documentId
+    WHEN MATCHED THEN UPDATE SET *
+    WHEN NOT MATCHED THEN INSERT *
+    """)
+else:
+    df_new_hashes.write.format("delta").saveAsTable(TABLE_SILVER_CONTENT_HASH)
+
 # CRITICAL FIX: Use MAX timestamp from Bronze records we ACTUALLY PROCESSED
 # Why: Bronze may write records with old timestamps (e.g., during reprocessing).
 # If we use "now" as watermark, we'll skip those old-timestamped records on next run.
@@ -1003,18 +1015,16 @@ for row in written_op_types:
 
 if truly_changed_count > 0:
     # Get the maximum sync_timestamp from records we processed
-    max_processed_timestamp = df_to_flatten.agg(F.max("sync_timestamp")).collect()[0][0]
+    max_processed_timestamp = df_to_flatten.agg(
+        F.date_format(F.max("sync_timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+    ).first()[0]
     
     if max_processed_timestamp:
         # Use the max timestamp we processed as watermark
-        new_watermark = max_processed_timestamp.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        new_watermark = max_processed_timestamp
         print(f"[INFO] Using MAX sync_timestamp from processed records: {new_watermark}")
     else:
-        # Fallback: use current time if timestamp is missing
-        from datetime import timezone
-        processing_time = datetime.now(timezone.utc)
-        new_watermark = processing_time.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-        print(f"[WARN] No sync_timestamp found, using current time: {new_watermark}")
+        raise ValueError("No processed sync_timestamp; refusing to advance Silver state")
 else:
     # No records processed, keep existing watermark
     new_watermark = last_watermark
@@ -1029,6 +1039,8 @@ df_new_state.write.format("delta").mode("overwrite").saveAsTable(TABLE_SILVER_FL
 print(f"[INFO] Updated {TABLE_SILVER_FLATTEN_STATE}")
 print(f"  New Watermark: {new_watermark}")
 print(f"  Total Flattened: {spark.table(TABLE_SILVER_MAIN).count():,}")
+df_to_flatten.unpersist()
+df_silver_changed.unpersist()
 
 # METADATA ********************
 

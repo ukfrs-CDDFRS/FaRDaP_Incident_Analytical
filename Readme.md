@@ -23,6 +23,37 @@
 
 ## Overview
 
+### Bronze and Silver runtime compatibility
+
+The Bronze and Silver full/incremental notebooks use explicit Bronze input types
+(including nullable `change_ts`) instead of pandas/Arrow schema inference. Timestamp
+inputs are normalized to UTC, and Silver watermarks use processed Bronze timestamps,
+not the driver clock. Invalid timestamps, incomplete fetches and duplicate incident
+keys stop processing rather than advancing state.
+
+Silver incremental merges retain newly discovered fields and add missing existing
+columns as typed nulls. New columns are additive; incompatible existing types require
+an explicit migration rather than a silent cast or a whole-table rebuild. Array
+replacements use a single Delta `replaceWhere` transaction per table and changed
+document batch, including removal of arrays that become empty. Processing metadata
+is excluded from array CDC comparisons; Complete-mode descriptions retain it with
+datetime values serialized as ISO text.
+Hashes and Silver state are published only after the CDC write succeeds.
+
+Gold notebooks and workspace runtime settings are unchanged. These changes do not
+make the multi-table pipeline transactional: serialize pipeline runs and validate
+retry behavior in an isolated lakehouse. Before switching runtime, compare schemas,
+row counts, null timestamps, new/removed JSON fields, array replacements, CDC output
+and downstream readers on both runtimes. Check Delta table features/protocols as well.
+
+Run the local helper regression tests from the repository root:
+
+```powershell
+python -m unittest discover -s .\inc_fardap_analytical_platform\tests -v
+```
+
+These tests do not execute Spark or Delta; Fabric regression runs are still required.
+
 The **FaRDaP Analytical Fabric Ingestion Platform** is a Microsoft Fabric-based enterprise data pipeline that:
 
 - 🔄 Extracts Fire and Rescue Service incident data from the **FaRDaP™ API**

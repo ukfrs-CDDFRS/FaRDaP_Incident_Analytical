@@ -8,12 +8,13 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
+# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
+# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
+# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
 # META         }
 # META       ]
 # META     }
@@ -47,7 +48,8 @@
 from pyspark.sql import functions as F, types as T
 from pyspark.sql.window import Window
 import json
-from datetime import datetime
+
+spark.conf.set("spark.sql.session.timeZone", "UTC")
 
 # Get the Variable library
 vl = notebookutils.variableLibrary.getLibrary("var_library_fardap")
@@ -206,10 +208,7 @@ def extract_arrays_from_json(json_str, document_id, array_configs):
     Fields like rescueDetails.by become rescueDetails_by columns.
     """
     arrays = {}
-    try:
-        content = json.loads(json_str)
-    except:
-        return arrays
+    content = json.loads(json_str)
     
     def find_arrays(obj, path=""):
         if isinstance(obj, dict):
@@ -263,9 +262,21 @@ print("  - extract_arrays_from_json: Extracts array items with FULL nesting")
 # STEP 2: Read Bronze + Dynamically Discover ALL Arrays
 # ============================================================================
 
-df_bronze = spark.table(TABLE_BRONZE).select("documentId", "raw_json", "sync_timestamp", "content_hash")
+df_bronze = spark.table(TABLE_BRONZE).select(
+    "documentId", "raw_json", "sync_timestamp", "content_hash"
+).persist()
+df_bronze.count()
+
+if df_bronze.filter(
+    F.col("documentId").isNull() | F.col("sync_timestamp").isNull() | F.col("content_hash").isNull()
+).limit(1).count():
+    raise ValueError("Bronze records have null keys, timestamps or hashes")
+if df_bronze.groupBy("documentId").count().filter(F.col("count") > 1).limit(1).count():
+    raise ValueError("Bronze records contain duplicate documentId values")
 
 bronze_count = df_bronze.count()
+if bronze_count == 0:
+    raise ValueError("Bronze is empty; refusing to overwrite Silver tables")
 print(f"[INFO] Loaded {bronze_count:,} records from {TABLE_BRONZE}")
 
 # Scan ALL records to discover ALL arrays (ensures 100% coverage of rare arrays)
@@ -294,8 +305,8 @@ for idx, sample_row in enumerate(sample_jsons):
                 if len(merged_fields) > len(existing_fields):
                     print(f"  [EXTENDED] {array_name} +{len(merged_fields) - len(existing_fields)} fields (record {idx+1}/{len(sample_jsons)})")
                 ARRAY_TABLES[array_name]['fields'] = merged_fields
-    except Exception as e:
-        continue
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"Invalid Bronze JSON during array discovery at row {idx}") from e
 
 print(f"\n[INFO] ✅ Discovered {len(ARRAY_TABLES)} array types dynamically:")
 for array_name, config in sorted(ARRAY_TABLES.items()):
@@ -317,7 +328,7 @@ print(f"\n[INFO] If API adds new array fields in future, they'll be auto-discove
 # ============================================================================
 
 flatten_udf = F.udf(
-    lambda json_str: flatten_json(json.loads(json_str)) if json_str else {}, 
+    lambda json_str: flatten_json(json.loads(json_str)) if json_str else {},
     T.MapType(T.StringType(), T.StringType())
 )
 
@@ -453,7 +464,7 @@ cols_order = ["documentId", "raw_json", "content_hash", "sync_timestamp", "flatt
 other_cols = [c for c in df_silver.columns if c not in cols_order]
 df_silver = df_silver.select(cols_order + sorted(other_cols))
 
-df_silver.write.format("delta").mode("overwrite").option("mergeSchema", "true").saveAsTable(TABLE_SILVER_MAIN)
+df_silver.write.format("delta").mode("overwrite").option("overwriteSchema", "true").saveAsTable(TABLE_SILVER_MAIN)
 
 silver_count = df_silver.count()
 print(f"[INFO] Wrote {silver_count:,} records to {TABLE_SILVER_MAIN}")
@@ -472,16 +483,20 @@ print(f"[INFO] Silver table schema: {len(df_silver.columns)} columns")
 # STEP 6: Track Flattening State + Content Hashes
 # ============================================================================
 
-# Create watermark state table
+# Prepare the source watermark; publish state only after CDC succeeds.
+new_watermark = df_bronze.agg(
+    F.date_format(F.max("sync_timestamp"), "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'")
+).first()[0]
+if new_watermark is None:
+    raise ValueError("No Bronze sync_timestamp; refusing to advance Silver state")
 df_state = spark.createDataFrame(
-    [(int(df_silver.count()), datetime.now().isoformat(), "full_load")],
+    [(int(df_silver.count()), new_watermark, "full_load")],
     schema="total_flattened INT, last_watermark STRING, mode STRING"
 )
-df_state.write.format("delta").mode("overwrite").saveAsTable(TABLE_SILVER_FLATTEN_STATE)
 
-print(f"[INFO] Created {TABLE_SILVER_FLATTEN_STATE}")
+print(f"[INFO] Prepared {TABLE_SILVER_FLATTEN_STATE}")
 print(f"  Total Flattened: {int(df_silver.count()):,}")
-print(f"  Watermark: {datetime.now().isoformat()}")
+print(f"  Watermark: {new_watermark}")
 
 # Create content_hash tracking table: prevents re-flattening unchanged JSON
 df_content_hash = df_bronze.select(
@@ -489,9 +504,8 @@ df_content_hash = df_bronze.select(
     F.col("content_hash"),
     F.current_timestamp().alias("last_flattened_at")
 )
-df_content_hash.write.format("delta").mode("overwrite").saveAsTable(TABLE_SILVER_CONTENT_HASH)
 
-print(f"\n[INFO] Created {TABLE_SILVER_CONTENT_HASH}")
+print(f"\n[INFO] Prepared {TABLE_SILVER_CONTENT_HASH}")
 print(f"  Tracking content_hash for {df_content_hash.count():,} records")
 print(f"  ✅ Incremental mode will ONLY re-flatten if content_hash changes")
 print(f"  ✅ This prevents wasted flattening of unchanged JSON")
@@ -575,6 +589,8 @@ else:
     )
 
 df_cdc.write.format("delta").mode("overwrite").saveAsTable(TABLE_CDC)
+df_content_hash.write.format("delta").mode("overwrite").saveAsTable(TABLE_SILVER_CONTENT_HASH)
+df_state.write.format("delta").mode("overwrite").saveAsTable(TABLE_SILVER_FLATTEN_STATE)
 
 print(f"[INFO] Created CDC log: {TABLE_CDC}")
 print(f"[INFO] CDC records: {df_cdc.count():,} (all 'insert' for full load)")
@@ -614,6 +630,7 @@ print(f"  Main Table: {TABLE_SILVER_MAIN} ({df_validate_main.count():,} rows)")
 print(f"  Array Tables: {len([t for t in ARRAY_TABLES.keys() if spark.table(ARRAY_TABLES[t]['table_name']).count() > 0])} created")
 print(f"  Content Hash Tracking: Enabled")
 print(f"  Schema Flexibility: Fully Dynamic")
+df_bronze.unpersist()
 
 # METADATA ********************
 
