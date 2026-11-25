@@ -8,12 +8,13 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
+# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
+# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
+# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
 # META         }
 # META       ]
 # META     }
@@ -129,6 +130,36 @@ def to_api_utc_millis(dt):
     dt_utc = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     dt_utc = dt_utc.astimezone(timezone.utc)
     return dt_utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def align_cdc_document_ids(df, table_name):
+    """Match legacy numeric CDC keys without silently changing identifier values."""
+    if not spark.catalog.tableExists(table_name):
+        return df
+    target_type = spark.table(table_name).schema["documentId"].dataType
+    source_type = df.schema["documentId"].dataType
+    if source_type == target_type:
+        return df
+    if not isinstance(source_type, T.StringType) or not isinstance(
+        target_type, (T.ByteType, T.ShortType, T.IntegerType, T.LongType)
+    ):
+        raise TypeError(
+            f"{table_name}.documentId: cannot safely align "
+            f"{source_type.simpleString()} to {target_type.simpleString()}"
+        )
+    converted_id = F.col("documentId").cast(target_type)
+    invalid_ids = df.filter(
+        F.col("documentId").isNull()
+        | converted_id.isNull()
+        | (converted_id.cast("string") != F.col("documentId"))
+    )
+    if invalid_ids.limit(1).count():
+        raise ValueError(
+            f"{table_name}.documentId: IDs cannot be represented losslessly as "
+            f"{target_type.simpleString()}; explicit migration required"
+        )
+    return df.withColumn("documentId", converted_id)
+
 
 # Get last watermarks, retaining support for the legacy single-watermark schema.
 watermark_df = spark.table(TABLE_STATE)
@@ -546,6 +577,10 @@ else:
     print(f'🔍 Change Analysis:')
     print(f'   No changes detected - all {df_raw.count()} incidents unchanged')
 
+# Validate CDC compatibility before committing changes to Bronze.
+if cdc_count > 0:
+    df_cdc = align_cdc_document_ids(df_tagged, TABLE_CDC)
+
 # Merge into Bronze table (MERGE mode for idempotency)
 print(f'\n🔄 Merging into {TABLE_FULL}...')
 
@@ -565,8 +600,6 @@ print(f'✅ Merge completed')
 
 # Append to CDC log (only if there were actual changes)
 if cdc_count > 0:
-    df_cdc = df_tagged
-
     # Diagnostic: Verify op_type distribution BEFORE writing
     op_type_counts = df_cdc.groupBy('op_type').count().collect()
     print(f'\n📊 CDC DataFrame op_type distribution (BEFORE write):')

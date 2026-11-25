@@ -8,12 +8,13 @@
 # META   },
 # META   "dependencies": {
 # META     "lakehouse": {
-# META       "default_lakehouse": "a84a2c40-9ba8-455c-8106-27db7711294b",
+# META       "default_lakehouse": "7711294b-27db-8106-455c-9ba8a84a2c40",
 # META       "default_lakehouse_name": "inc_fardap_lakehouse",
-# META       "default_lakehouse_workspace_id": "04c5b96c-21ba-4ebb-812e-bed01bbac715",
+# META       "default_lakehouse_workspace_id": "00000000-0000-0000-0000-000000000000",
 # META       "known_lakehouses": [
 # META         {
-# META           "id": "a84a2c40-9ba8-455c-8106-27db7711294b"
+# META           "id": "7711294b-27db-8106-455c-9ba8a84a2c40",
+# META           "workspace_id": "00000000-0000-0000-0000-000000000000"
 # META         }
 # META       ]
 # META     }

@@ -24,6 +24,23 @@
 
 ## Quick Reference: Notebook Workflow
 
+### Bronze CDC identifier compatibility
+
+The Bronze incremental notebook builds incoming `documentId` values as strings.
+Existing lakehouses may store Bronze CDC identifiers as `BIGINT`. Before the
+Bronze MERGE, the notebook aligns CDC identifiers to the existing integral column
+type and rejects null, overflowing, or lossy conversions. It does not overwrite
+the CDC table or enable schema evolution to change key types.
+
+If a pipeline run fails at the CDC append **after** the Bronze MERGE, do not
+assume rerunning the pipeline will restore the missing CDC entries: the content
+hashes already match, so those records can be classified as unchanged. Preserve
+the failed run's timestamps and Delta table history, and recover the missing CDC
+entries by comparing the Bronze versions immediately before and after that
+run's MERGE. Use the pre-MERGE version to distinguish inserts from updates.
+Do not advance the failed run's watermarks manually or perform a full load as a
+workaround; reconcile the missing CDC entries before resuming the pipeline.
+
 **Notebook**: `02_Silver_Incremental_Transform_Enhanced.Notebook`
 
 The CDC tracking happens automatically during the Silver incremental transform:
